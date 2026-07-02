@@ -10,7 +10,7 @@ export default function Signup() {
   const { signup, loginWithGoogle } = useAuth()
   const navigate = useNavigate()
 
-  async function handleSubmit(e: SubmitEvent) {
+  async function handleSubmit(e: SubmitEvent<HTMLFormElement>) {
     e.preventDefault()
     setError('')
     try {
@@ -32,16 +32,16 @@ export default function Signup() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-900">
-      <form onSubmit={handleSubmit} className="w-full max-w-sm rounded-lg bg-gray-800 p-8">
-        <h1 className="mb-6 text-2xl font-bold text-white">Sign up</h1>
-        {error && <p className="mb-4 text-sm text-red-400">{error}</p>}
+    <div className="flex min-h-screen items-center justify-center bg-page">
+      <form onSubmit={handleSubmit} className="w-full max-w-sm rounded-lg border border-border bg-surface p-8">
+        <h1 className="mb-6 text-2xl font-bold text-fg">Sign up</h1>
+        {error && <p className="mb-4 text-sm text-warning">{error}</p>}
         <input
           type="text"
           placeholder="Display name"
           value={displayName}
           onChange={(e) => setDisplayName(e.target.value)}
-          className="mb-3 w-full rounded bg-gray-700 px-3 py-2 text-white"
+          className="mb-3 w-full rounded border border-border-strong bg-page px-3 py-2 text-fg placeholder-fg-muted"
           required
         />
         <input
@@ -49,7 +49,7 @@ export default function Signup() {
           placeholder="Email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          className="mb-3 w-full rounded bg-gray-700 px-3 py-2 text-white"
+          className="mb-3 w-full rounded border border-border-strong bg-page px-3 py-2 text-fg placeholder-fg-muted"
           required
         />
         <input
@@ -57,22 +57,25 @@ export default function Signup() {
           placeholder="Password (min 6 characters)"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          className="mb-4 w-full rounded bg-gray-700 px-3 py-2 text-white"
+          className="mb-4 w-full rounded border border-border-strong bg-page px-3 py-2 text-fg placeholder-fg-muted"
           required
           minLength={6}
         />
-        <button type="submit" className="w-full rounded bg-blue-600 py-2 font-medium text-white hover:bg-blue-500">
+        <button
+          type="submit"
+          className="w-full rounded bg-accent py-2 font-medium text-accent-fg hover:bg-accent-hover"
+        >
           Create account
         </button>
         <button
           type="button"
           onClick={handleGoogleSignup}
-          className="mt-3 w-full rounded bg-white py-2 font-medium text-gray-900 hover:bg-gray-200"
+          className="mt-3 w-full rounded border border-border-strong bg-transparent py-2 font-medium text-fg hover:bg-surface-hover"
         >
           Continue with Google
         </button>
-        <p className="mt-4 text-center text-sm text-gray-400">
-          Already have an account? <Link to="/login" className="text-blue-400 hover:underline">Log in</Link>
+        <p className="mt-4 text-center text-sm text-fg-secondary">
+          Already have an account? <Link to="/login" className="text-accent hover:underline">Log in</Link>
         </p>
       </form>
     </div>

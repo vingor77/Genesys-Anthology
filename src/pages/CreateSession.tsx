@@ -30,16 +30,16 @@ export default function CreateSession() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-900 p-8 text-white">
-      <h1 className="mb-6 text-2xl font-bold">Create Session</h1>
+    <div>
+      <h1 className="mb-6 text-2xl font-bold text-fg">Create session</h1>
       <form onSubmit={handleSubmit} className="max-w-sm space-y-4">
-        {error && <p className="text-sm text-red-400">{error}</p>}
+        {error && <p className="text-sm text-warning">{error}</p>}
         <div>
-          <label className="mb-1 block text-sm text-gray-400">Game</label>
+          <label className="mb-1 block text-sm text-fg-secondary">Game</label>
           <select
             value={gameType}
             onChange={(e) => setGameType(e.target.value as GameType)}
-            className="w-full rounded bg-gray-700 px-3 py-2"
+            className="w-full rounded border border-border-strong bg-page px-3 py-2 text-fg"
           >
             {GAMES.map((g) => (
               <option key={g.value} value={g.value}>{g.label}</option>
@@ -47,15 +47,18 @@ export default function CreateSession() {
           </select>
         </div>
         <div>
-          <label className="mb-1 block text-sm text-gray-400">Session name</label>
+          <label className="mb-1 block text-sm text-fg-secondary">Session name</label>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
-            className="w-full rounded bg-gray-700 px-3 py-2"
+            className="w-full rounded border border-border-strong bg-page px-3 py-2 text-fg"
             required
           />
         </div>
-        <button type="submit" className="rounded bg-blue-600 px-4 py-2 hover:bg-blue-500">
+        <button
+          type="submit"
+          className="rounded bg-accent px-4 py-2 text-accent-fg hover:bg-accent-hover"
+        >
           Create
         </button>
       </form>

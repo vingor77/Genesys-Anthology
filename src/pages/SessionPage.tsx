@@ -3,62 +3,103 @@ import { useParams } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import {
   subscribeToSession,
-  subscribeToPlayers,
+  subscribeToRoster,
   type Session,
-  type SessionPlayer,
+  type Membership,
 } from '../lib/sessions'
 
 export default function SessionPage() {
   const { sessionId } = useParams()
   const { user } = useAuth()
   const [session, setSession] = useState<Session | null>(null)
-  const [players, setPlayers] = useState<SessionPlayer[]>([])
+  const [roster, setRoster] = useState<Membership[]>([])
+  const [loading, setLoading] = useState(true)
+  const [copied, setCopied] = useState<'code' | 'link' | null>(null)
+
+  async function handleCopy(text: string, which: 'code' | 'link') {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(which)
+      setTimeout(() => setCopied(null), 1500)
+    } catch (err) {
+      console.error('Copy failed:', err)
+    }
+  }
 
   useEffect(() => {
     if (!sessionId) return
-    const unsubSession = subscribeToSession(sessionId, setSession)
-    const unsubPlayers = subscribeToPlayers(sessionId, setPlayers)
+    let sessionLoaded = false
+    let rosterLoaded = false
+
+    const unsubSession = subscribeToSession(sessionId, (s) => {
+      setSession(s)
+      sessionLoaded = true
+      if (rosterLoaded) setLoading(false)
+    })
+    const unsubRoster = subscribeToRoster(sessionId, (r) => {
+      setRoster(r)
+      rosterLoaded = true
+      if (sessionLoaded) setLoading(false)
+    })
+
     return () => {
       unsubSession()
-      unsubPlayers()
+      unsubRoster()
     }
   }, [sessionId])
 
+  if (loading) {
+    return <p className="text-fg-secondary">Loading session…</p>
+  }
+
   if (!session) {
-    return <div className="p-8 text-white">Loading session…</div>
+    return <p className="text-fg-secondary">This session no longer exists.</p>
   }
 
   const isDM = user?.uid === session.dmId
   const inviteLink = `${window.location.origin}/join/${session.inviteCode}`
 
   return (
-    <div className="min-h-screen bg-gray-900 p-8 text-white">
-      <h1 className="text-2xl font-bold">{session.name}</h1>
-      <p className="mb-1 text-gray-400">Game: {session.gameType}</p>
-      <p className="mb-4 text-gray-400">DM: {session.dmName}</p>
+    <div>
+      <h1 className="text-2xl font-bold text-fg">{session.name}</h1>
+      <p className="mb-1 text-fg-secondary">Game: {session.gameType}</p>
+      <p className="mb-4 text-fg-secondary">DM: {session.dmName}</p>
 
       {isDM && (
-        <div className="mb-6 rounded bg-gray-800 p-4">
-          <p className="text-sm text-gray-400">Invite code</p>
-          <p className="text-xl font-mono">{session.inviteCode}</p>
-          <p className="mt-2 text-sm text-gray-400">Invite link</p>
-          <p className="break-all text-sm text-blue-400">{inviteLink}</p>
+        <div className="mb-6 rounded-lg border border-border bg-surface p-4">
+          <p className="text-sm text-fg-secondary">Invite code (tap to copy)</p>
+          <button
+            onClick={() => handleCopy(session.inviteCode, 'code')}
+            className="block text-left text-xl font-mono text-fg hover:text-accent"
+          >
+            {session.inviteCode}
+          </button>
+          {copied === 'code' && <p className="text-xs text-accent">Copied</p>}
+
+          <p className="mt-3 text-sm text-fg-secondary">Invite link (tap to copy)</p>
+          <button
+            onClick={() => handleCopy(inviteLink, 'link')}
+            className="block break-all text-left text-sm text-accent hover:underline"
+          >
+            {inviteLink}
+          </button>
+          {copied === 'link' && <p className="text-xs text-fg-muted">Copied</p>}
         </div>
       )}
 
-      <div className="rounded bg-gray-800 p-4">
-        <h2 className="mb-2 font-semibold">Players ({players.length})</h2>
+      <div className="rounded-lg border border-border bg-surface p-4">
+        <h2 className="mb-2 font-semibold text-fg">Players ({roster.length})</h2>
         <ul className="space-y-1">
-          {players.map((p) => (
-            <li key={p.uid} className="text-gray-300">
-              {p.displayName}
-              {p.uid === session.dmId ? ' (DM)' : ''}
+          {roster.map((m) => (
+            <li key={m.uid} className="text-fg-secondary">
+              {m.displayName}
+              {m.role === 'dm' ? ' (DM)' : ''}
             </li>
           ))}
         </ul>
       </div>
 
-      <p className="mt-6 text-sm text-gray-500">
+      <p className="mt-6 text-sm text-fg-muted">
         {isDM ? 'You are the DM of this session.' : 'You are a player in this session.'}
       </p>
     </div>

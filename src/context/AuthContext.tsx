@@ -18,6 +18,7 @@ interface AuthContextType {
   signup: (email: string, password: string, displayName: string) => Promise<void>
   loginWithGoogle: () => Promise<void>
   logout: () => Promise<void>
+  refreshUser: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
@@ -67,8 +68,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await signOut(auth)
   }
 
+  // updateProfile() writes to Firebase's servers but does NOT trigger
+  // onAuthStateChanged, so local state (and anything reading it, like the
+  // navbar) stays stale until something calls this. Spreading into a new
+  // object forces React to treat it as a changed reference and re-render.
+  async function refreshUser() {
+    if (!auth.currentUser) return
+    await auth.currentUser.reload()
+    setUser({ ...auth.currentUser } as User)
+  }
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, signup, loginWithGoogle, logout }}>
+    <AuthContext.Provider
+      value={{ user, loading, login, signup, loginWithGoogle, logout, refreshUser }}
+    >
       {children}
     </AuthContext.Provider>
   )

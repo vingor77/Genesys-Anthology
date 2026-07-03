@@ -9,7 +9,10 @@ import ManageAccount from './pages/ManageAccount'
 import CreateSession from './pages/CreateSession'
 import JoinSession from './pages/JoinSession'
 import SessionPage from './pages/SessionPage'
-import MySessions from './pages/Mysessions'
+import MySessions from './pages/MySessions'
+import NotFound from './pages/NotFound'
+import DeleteAccount from './pages/DeleteAccount'
+import CreateCharacter from './pages/CreateCharacter'
 
 function App() {
   return (
@@ -18,6 +21,7 @@ function App() {
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
+          <Route path="/*" element={<NotFound />} />
 
           <Route element={<ProtectedRoute />}>
             <Route element={<Layout />}>
@@ -28,6 +32,8 @@ function App() {
               <Route path="/join" element={<JoinSession />} />
               <Route path="/join/:code" element={<JoinSession />} />
               <Route path="/sessions" element={<MySessions />} />
+              <Route path="/delete-account" element={<DeleteAccount />} />
+              <Route path="/sessions/:sessionId/characters/new" element={<CreateCharacter />} />
             </Route>
           </Route>
         </Routes>

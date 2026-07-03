@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import {
   subscribeToSession,
@@ -83,7 +83,7 @@ export default function SessionPage() {
           >
             {inviteLink}
           </button>
-          {copied === 'link' && <p className="text-xs text-fg-muted">Copied</p>}
+          {copied === 'link' && <p className="text-xs text-accent">Copied</p>}
         </div>
       )}
 
@@ -102,6 +102,13 @@ export default function SessionPage() {
       <p className="mt-6 text-sm text-fg-muted">
         {isDM ? 'You are the DM of this session.' : 'You are a player in this session.'}
       </p>
+
+      <Link
+        to={`/sessions/${session.id}/characters/new`}
+        className="mt-4 inline-block rounded bg-accent px-4 py-2 text-sm font-medium text-accent-fg hover:bg-accent-hover"
+      >
+        Create a character
+      </Link>
     </div>
   )
 }

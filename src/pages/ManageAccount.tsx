@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { updateProfile } from 'firebase/auth'
 import { doc, updateDoc } from 'firebase/firestore'
 import { useAuth } from '../context/AuthContext'
@@ -12,6 +13,8 @@ export default function ManageAccount() {
   async function handleSave() {
     if (!auth.currentUser) return
 
+    // Firebase Auth (what the navbar reads) and the Firestore users doc are
+    // two separate systems — updating one doesn't touch the other.
     await updateProfile(auth.currentUser, { displayName })
     await updateDoc(doc(db, 'users', auth.currentUser.uid), { displayName })
 
@@ -43,6 +46,12 @@ export default function ManageAccount() {
           Save changes
         </button>
         {saved && <p className="text-sm text-accent">Saved.</p>}
+
+        <div className="mt-6 border-t border-border pt-4">
+          <Link to="/delete-account" className="text-sm text-warning hover:underline">
+            Delete account
+          </Link>
+        </div>
       </div>
     </div>
   )

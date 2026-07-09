@@ -1,9 +1,25 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import { subscribeToSession, type Session } from '../lib/sessions'
 import { BBB_SPECIES, BBB_SKILLS, BBB_STARTING_XP } from '../lib/gameConfigs/bbb'
-import type { Characteristics, CharacterSkill, CharacterTalent } from '../lib/genesysCalc'
-import type { InventoryWeapon, InventoryArmor } from '../lib/characters'
+import type { Characteristics } from '../lib/genesysCalc'
+import {
+  fetchSkills,
+  fetchTalents,
+  fetchQualities,
+  fetchObjects,
+  type SkillDoc,
+  type TalentDoc,
+  type QualityDoc,
+  type ObjectDoc,
+  type SkillEntry,
+  type TalentEntry,
+} from '../lib/characters'
+
+// Items are concrete/pre-named/pre-qualified Objects now, not templates —
+// the wizard just stores which one was picked, nothing to customize.
+
 import StepBasics from '../components/characterCreator/StepBasics'
 import StepCareer from '../components/characterCreator/StepCareer'
 import StepFreeSkills from '../components/characterCreator/StepFreeSkills'
@@ -11,22 +27,26 @@ import StepCharacteristics from '../components/characterCreator/StepCharacterist
 import StepSkills from '../components/characterCreator/StepSkills'
 import StepTalents from '../components/characterCreator/StepTalents'
 import StepInventory from '../components/characterCreator/StepInventory'
+import StepGear from '../components/characterCreator/StepGear'
 import StepPersonality from '../components/characterCreator/StepPersonality'
 import StepReview from '../components/characterCreator/StepReview'
 
 export interface CharacterDraft {
   characterName: string
   playerName: string
-  speciesArchetype: string
-  career: string
+  species: { name: string; specialAbility?: { name: string; description: string } }
+  career: { name: string; specialAbility?: { name: string; description: string }; chosenSkills: string[] }
   characteristics: Characteristics
-  skills: CharacterSkill[]
-  freeSkillNames: string[]
-  talents: CharacterTalent[]
-  talentSkillChoices: Record<string, string[]> // key = `${talentName}:${rank}`
-  talentCharacteristicChoices: Record<string, string[]>
-  weapon: InventoryWeapon | null
-  armor: InventoryArmor | null
+  skills: SkillEntry[]
+  // Choices used to live in two separate top-level Records keyed by
+  // "talentName:rank" — now each TalentEntry carries its own
+  // skillChoices/characteristicChoices directly, so there's nothing
+  // separate to keep in sync here anymore.
+  talents: TalentEntry[]
+  weaponObjectId: string | null
+  armorObjectId: string | null
+  gearObjectIds: string[]
+  customItems: { name: string; description: string }[] // staged locally — not written to Firestore until StepReview actually creates the character
   identityNotes: string[]
   totalXP: number
   strength: string
@@ -43,12 +63,49 @@ export interface StepProps {
   draft: CharacterDraft
   updateDraft: (updates: Partial<CharacterDraft>) => void
   setCanProceed: (can: boolean) => void
+  maxSkillRank?: number // chargen defaults to BBB_MAX_STARTING_SKILL_RANK (2); live play passes 5
+  // Fetched once at the wizard's top level (module-level cached in
+  // characters.ts, so this is cheap even though several steps need it) —
+  // no step re-fetches its own copy.
+  skillDocs: SkillDoc[]
+  talentDocs: TalentDoc[]
+  qualityDocs: QualityDoc[]
+  objectDocs: ObjectDoc[]
+  sessionId: string
 }
 
 const STEP_LABELS = [
   'Basics', 'Career', 'Free Skills', 'Characteristics', 'Skills',
-  'Talents', 'Inventory', 'Personality', 'Review',
+  'Talents', 'Inventory', 'Gear', 'Personality', 'Review',
 ]
+
+// The single source of truth for "what a blank draft looks like" — used
+// both for the wizard's initial state and for StepCareer's reset when
+// actually changing careers. Having one function means the reset can
+// never quietly miss a field that gets added here later.
+export function buildInitialDraft(playerName: string): CharacterDraft {
+  return {
+    characterName: '',
+    playerName,
+    species: { name: BBB_SPECIES },
+    career: { name: '', chosenSkills: [] },
+    characteristics: {
+      brawn: 2, agility: 2, intellect: 2, cunning: 2, willpower: 2, presence: 2,
+    },
+    skills: BBB_SKILLS.map((name) => ({ name, rank: 0 })),
+    talents: [],
+    weaponObjectId: null,
+    armorObjectId: null,
+    gearObjectIds: [],
+    customItems: [],
+    identityNotes: ['', '', ''],
+    totalXP: BBB_STARTING_XP,
+    strength: '',
+    flaw: '',
+    desire: '',
+    fear: '',
+  }
+}
 
 export default function CreateCharacter() {
   const { sessionId } = useParams()
@@ -56,28 +113,40 @@ export default function CreateCharacter() {
   const [step, setStep] = useState(0)
   const [canProceed, setCanProceed] = useState(false)
 
-  const [draft, setDraft] = useState<CharacterDraft>({
-    characterName: '',
-    playerName: user?.displayName ?? user?.email ?? '',
-    speciesArchetype: BBB_SPECIES,
-    career: '',
-    characteristics: {
-      brawn: 2, agility: 2, intellect: 2, cunning: 2, willpower: 2, presence: 2,
-    },
-    skills: BBB_SKILLS.map((name) => ({ name, rank: 0 })),
-    freeSkillNames: [],
-    talents: [],
-    talentSkillChoices: {},
-    talentCharacteristicChoices: {},
-    weapon: null,
-    armor: null,
-    identityNotes: ['', '', ''],
-    totalXP: BBB_STARTING_XP,
-    strength: '',
-    flaw: '',
-    desire: '',
-    fear: '',
-  })
+  // The wizard no longer asks the player which game they're creating a
+  // character for — a character is always created from within a specific
+  // session, and the session already has a gameType the moment it exists.
+  // undefined = still loading, null = doesn't exist or no access (this
+  // simpler subscribeToSession doesn't distinguish the two), Session =
+  // loaded successfully. Same shape as subscribeToCharacter elsewhere in
+  // the app — no separate status wrapper.
+  const [session, setSession] = useState<Session | null | undefined>(undefined)
+
+  useEffect(() => {
+    if (!sessionId) return
+    const unsub = subscribeToSession(sessionId, (result) => {
+      setSession(result)
+    })
+    return unsub
+  }, [sessionId])
+
+  // Skills/talents/qualities now live in Firestore, not embedded arrays —
+  // fetched once here and passed down, rather than each step re-fetching.
+  const [skillDocs, setSkillDocs] = useState<SkillDoc[] | null>(null)
+  const [talentDocs, setTalentDocs] = useState<TalentDoc[] | null>(null)
+  const [qualityDocs, setQualityDocs] = useState<QualityDoc[] | null>(null)
+  const [objectDocs, setObjectDocs] = useState<ObjectDoc[] | null>(null)
+
+  useEffect(() => {
+    fetchSkills().then(setSkillDocs)
+    fetchTalents().then(setTalentDocs)
+    fetchQualities().then(setQualityDocs)
+    fetchObjects().then(setObjectDocs)
+  }, [])
+
+  const [draft, setDraft] = useState<CharacterDraft>(() =>
+    buildInitialDraft(user?.displayName ?? user?.email ?? '')
+  )
 
   function updateDraft(updates: Partial<CharacterDraft>) {
     setDraft((prev) => ({ ...prev, ...updates }))
@@ -92,7 +161,33 @@ export default function CreateCharacter() {
     setStep((s) => Math.max(s - 1, 0))
   }
 
-  const stepProps: StepProps = { draft, updateDraft, setCanProceed }
+  if (session === undefined) {
+    return <p className="text-fg-secondary">Loading session…</p>
+  }
+  if (session === null) {
+    return <p className="text-fg-secondary">This session doesn't exist, or you don't have access to it.</p>
+  }
+  if (session.gameType !== 'bbb') {
+    return (
+      <p className="text-fg-secondary">
+        Character creation for {session.gameType} isn't built yet — only BB&B is supported right now.
+      </p>
+    )
+  }
+  if (!skillDocs || !talentDocs || !qualityDocs || !objectDocs) {
+    return <p className="text-fg-secondary">Loading game data…</p>
+  }
+
+  const stepProps: StepProps = {
+    draft,
+    updateDraft,
+    setCanProceed,
+    skillDocs,
+    talentDocs,
+    qualityDocs,
+    objectDocs,
+    sessionId: sessionId!,
+  }
 
   return (
     <div className="pb-24">
@@ -113,8 +208,9 @@ export default function CreateCharacter() {
       {step === 4 && <StepSkills {...stepProps} />}
       {step === 5 && <StepTalents {...stepProps} />}
       {step === 6 && <StepInventory {...stepProps} />}
-      {step === 7 && <StepPersonality {...stepProps} />}
-      {step === 8 && <StepReview {...stepProps} />}
+      {step === 7 && <StepGear {...stepProps} />}
+      {step === 8 && <StepPersonality {...stepProps} />}
+      {step === 9 && <StepReview {...stepProps} />}
 
       <div className="fixed inset-x-0 bottom-0 z-10 border-t border-border bg-page px-6 py-4">
         <div className="flex items-center gap-4">

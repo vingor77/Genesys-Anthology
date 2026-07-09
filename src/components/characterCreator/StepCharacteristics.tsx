@@ -4,7 +4,7 @@ import {
   BBB_MAX_STARTING_CHARACTERISTIC,
   BBB_STARTING_CHARACTERISTIC,
 } from '../../lib/gameConfigs/bbb'
-import { characteristicCost, totalSpentXP, type Characteristics } from '../../lib/genesysCalc'
+import { characteristicCost, totalSpentXP, computeCareerSkills, type Characteristics } from '../../lib/genesysCalc'
 import type { StepProps } from '../../pages/CreateCharacter'
 
 const CHARACTERISTIC_LABELS: { key: keyof Characteristics; label: string }[] = [
@@ -16,18 +16,18 @@ const CHARACTERISTIC_LABELS: { key: keyof Characteristics; label: string }[] = [
   { key: 'presence', label: 'Presence' },
 ]
 
-export default function StepCharacteristics({ draft, updateDraft, setCanProceed }: StepProps) {
+export default function StepCharacteristics({ draft, updateDraft, setCanProceed, talentDocs }: StepProps) {
   useEffect(() => {
     setCanProceed(true) // no minimum spend required at this step
   }, [setCanProceed])
 
-  const career = BBB_CAREERS.find((c) => c.name === draft.career)
+  const career = BBB_CAREERS.find((c) => c.name === draft.career.name)
 
   const spent = totalSpentXP(
     draft.characteristics,
     draft.skills,
-    career?.skills ?? [],
-    draft.freeSkillNames,
+    computeCareerSkills(draft.career, draft.talents, talentDocs),
+    draft.career.chosenSkills,
     draft.talents
   )
   const available = draft.totalXP - spent

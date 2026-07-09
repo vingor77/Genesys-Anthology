@@ -18,16 +18,16 @@ export default function StepPersonality({ draft, updateDraft, setCanProceed }: S
   return (
     <div>
       <h2 className="mb-4 text-xl font-semibold text-fg">Personality</h2>
-      <div className="max-w-lg space-y-4">
+      <div className="grid max-w-[800px] grid-cols-1 gap-4 sm:grid-cols-2">
         {FIELDS.map((f) => (
           <div key={f.key}>
-            <label className="mb-1 block text-sm text-fg-secondary">{f.label}</label>
+            <label className="mb-1 block text-sm font-medium text-fg-secondary">{f.label}</label>
             <textarea
               value={draft[f.key]}
               onChange={(e) => updateDraft({ [f.key]: e.target.value })}
               placeholder={f.placeholder}
               rows={2}
-              className="w-full rounded border border-border-strong bg-page px-3 py-2 text-fg placeholder-fg-muted"
+              className="w-full rounded border border-border-strong bg-surface px-3 py-2 text-sm text-fg placeholder-fg-muted"
             />
           </div>
         ))}

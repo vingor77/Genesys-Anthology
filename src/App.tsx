@@ -13,6 +13,7 @@ import MySessions from './pages/MySessions'
 import NotFound from './pages/NotFound'
 import DeleteAccount from './pages/DeleteAccount'
 import CreateCharacter from './pages/CreateCharacter'
+import AdminSeedPage from './seed/AdminSeedPage'
 
 function App() {
   return (
@@ -22,6 +23,7 @@ function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
           <Route path="/*" element={<NotFound />} />
+          <Route path="admin-seed" element={<AdminSeedPage />} />
 
           <Route element={<ProtectedRoute />}>
             <Route element={<Layout />}>

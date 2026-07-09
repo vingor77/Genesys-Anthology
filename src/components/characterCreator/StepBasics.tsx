@@ -30,7 +30,7 @@ export default function StepBasics({ draft, updateDraft, setCanProceed }: StepPr
         </div>
         <div>
           <label className="mb-1 block text-sm text-fg-secondary">Species / Archetype</label>
-          <p className="text-fg">{draft.speciesArchetype}</p>
+          <p className="text-fg">{draft.species.name}</p>
         </div>
       </div>
     </div>

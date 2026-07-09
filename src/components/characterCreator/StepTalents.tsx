@@ -1,17 +1,17 @@
 import { useEffect, useState } from 'react'
-import { BBB_CAREERS, BBB_TALENTS, BBB_SKILLS, type TalentConfig } from '../../lib/gameConfigs/bbb'
+import { BBB_TALENTS, BBB_SKILLS } from '../../lib/gameConfigs/bbb'
 import {
   canBuyTalent,
   totalSpentXP,
-  getTalentPrerequisiteName,
   reconcileTalents,
   tierForRank,
-  type TalentTier,
+  computeCareerSkills,
   type Characteristics,
 } from '../../lib/genesysCalc'
+import type { TalentDoc, TalentEntry } from '../../lib/characters'
 import type { StepProps } from '../../pages/CreateCharacter'
 
-const TIERS: TalentTier[] = [1, 2, 3, 4, 5]
+const TIERS: (1 | 2 | 3 | 4 | 5)[] = [1, 2, 3, 4, 5]
 
 const CHARACTERISTIC_OPTIONS: { key: keyof Characteristics; label: string }[] = [
   { key: 'brawn', label: 'Brawn' },
@@ -22,126 +22,126 @@ const CHARACTERISTIC_OPTIONS: { key: keyof Characteristics; label: string }[] = 
   { key: 'presence', label: 'Presence' },
 ]
 
-export default function StepTalents({ draft, updateDraft, setCanProceed }: StepProps) {
-  const [viewingTalent, setViewingTalent] = useState<TalentConfig | null>(null)
-  const career = BBB_CAREERS.find((c) => c.name === draft.career)
+export default function StepTalents({ draft, updateDraft, setCanProceed, talentDocs, skillDocs }: StepProps) {
+  const [viewingTalentId, setViewingTalentId] = useState<string | null>(null)
+  const bbbTalentDocs = talentDocs.filter((d) => BBB_TALENTS.includes(d.id))
 
+  const career = draft.career
   const spent = totalSpentXP(
     draft.characteristics,
     draft.skills,
-    career?.skills ?? [],
-    draft.freeSkillNames,
+    computeCareerSkills(draft.career, draft.talents, talentDocs),
+    career.chosenSkills,
     draft.talents
   )
   const available = draft.totalXP - spent
 
-  function ownedEntries(name: string) {
-    return draft.talents.filter((t) => t.name === name).sort((a, b) => a.rank - b.rank)
+  function ownedEntries(id: string) {
+    return draft.talents.filter((t) => t.id === id).sort((a, b) => a.rank - b.rank)
   }
-  function currentRank(name: string): number {
-    const entries = ownedEntries(name)
+  function currentRank(id: string): number {
+    const entries = ownedEntries(id)
     return entries.length > 0 ? entries[entries.length - 1].rank : 0
   }
-  function hasName(name: string): boolean {
-    return draft.talents.some((t) => t.name === name)
+  function hasId(id: string): boolean {
+    return draft.talents.some((t) => t.id === id)
   }
 
-  // ---- choice bookkeeping, keyed by `${talentName}:${rank}` ----
+  // Needed skill/characteristic picks for a specific rank-entry. Knack For
+  // It scales per rank (1 at rank 1, 2 more each rank after) — the schema
+  // only stores a flat count, so this is a narrow, explicit special-case
+  // rather than a general mechanism. If more rank-scaling talents show up
+  // later, this is the spot to generalize.
+  function neededSkillPicks(doc: TalentDoc, rank: number): number {
+    if (doc.id === 'knack-for-it') return rank === 1 ? 1 : 2
+    return doc.skillChoice?.count ?? 0
+  }
+
   const skillChoiceEntries = draft.talents
     .map((t) => {
-      const config = BBB_TALENTS.find((c) => c.name === t.name)
-      if (!config?.requiresSkillChoice) return null
-      const needed = config.skillChoiceCountAtRank
-        ? config.skillChoiceCountAtRank(t.rank)
-        : (config.skillChoiceCount ?? 1)
-      return { key: `${t.name}:${t.rank}`, name: t.name, rank: t.rank, needed, exclude: config.skillChoiceExclude ?? [] }
+      const doc = bbbTalentDocs.find((d) => d.id === t.id)
+      if (!doc?.skillChoice) return null
+      return { entry: t, doc, needed: neededSkillPicks(doc, t.rank) }
     })
     .filter((x): x is NonNullable<typeof x> => x !== null)
 
   const characteristicChoiceEntries = draft.talents
     .map((t) => {
-      const config = BBB_TALENTS.find((c) => c.name === t.name)
-      if (!config?.requiresCharacteristicChoice) return null
-      const needed = config.characteristicChoiceCount ?? 1
-      return { key: `${t.name}:${t.rank}`, name: t.name, rank: t.rank, needed }
+      const doc = bbbTalentDocs.find((d) => d.id === t.id)
+      if (!doc?.characteristicChoice) return null
+      return { entry: t, doc, needed: doc.characteristicChoice.count }
     })
     .filter((x): x is NonNullable<typeof x> => x !== null)
 
-  const allSkillChoicesMade = skillChoiceEntries.every((e) => {
-    const picked = draft.talentSkillChoices[e.key] ?? []
-    return picked.length === e.needed && picked.every(Boolean)
-  })
-  const allCharacteristicChoicesMade = characteristicChoiceEntries.every((e) => {
-    const picked = draft.talentCharacteristicChoices[e.key] ?? []
-    return picked.length === e.needed && picked.every(Boolean)
-  })
+  const allSkillChoicesMade = skillChoiceEntries.every(
+    ({ entry, needed }) => (entry.skillChoices ?? []).length === needed && (entry.skillChoices ?? []).every(Boolean)
+  )
+  const allCharacteristicChoicesMade = characteristicChoiceEntries.every(
+    ({ entry, needed }) =>
+      (entry.characteristicChoices ?? []).length === needed && (entry.characteristicChoices ?? []).every(Boolean)
+  )
 
   useEffect(() => {
     setCanProceed(allSkillChoicesMade && allCharacteristicChoicesMade)
   }, [allSkillChoicesMade, allCharacteristicChoicesMade, setCanProceed])
 
-  function cleanChoicesFor(reconciled: typeof draft.talents) {
-    const stillPairs = new Set(reconciled.map((t) => `${t.name}:${t.rank}`))
-    const cleanedSkills = Object.fromEntries(
-      Object.entries(draft.talentSkillChoices).filter(([k]) => stillPairs.has(k))
-    )
-    const cleanedChars = Object.fromEntries(
-      Object.entries(draft.talentCharacteristicChoices).filter(([k]) => stillPairs.has(k))
-    )
-    return { cleanedSkills, cleanedChars }
-  }
-
   // Handles both "first purchase" (rank 0 -> 1, at the talent's base tier)
   // and "rank up" (rank N -> N+1, at an escalated tier) — same operation,
   // since a first purchase is just rank 1 of something with no prior rank.
-  function buyNextRank(talent: TalentConfig) {
-    const rank = currentRank(talent.name)
-    if (rank >= 1 && !talent.ranked) return // already owned and not ranked — nothing more to buy
+  function buyNextRank(doc: TalentDoc) {
+    const rank = currentRank(doc.id)
+    if (rank >= 1 && !doc.ranked) return // already owned and not ranked — nothing more to buy
 
     const nextRank = rank + 1
-    const nextTier = tierForRank(talent.tier, nextRank)
+    const nextTier = tierForRank(doc.tier, nextRank)
 
-    if (rank === 0) {
-      const prereq = getTalentPrerequisiteName(talent.name)
-      if (prereq && !hasName(prereq)) return
-    }
+    if (rank === 0 && doc.prerequisite && !hasId(doc.prerequisite)) return
     if (!canBuyTalent(draft.talents, nextTier)) return
     if (5 * nextTier > available) return
 
-    updateDraft({ talents: [...draft.talents, { name: talent.name, tier: nextTier, rank: nextRank }] })
+    const newEntry: TalentEntry = { id: doc.id, tier: nextTier, rank: nextRank }
+    if (doc.skillChoice) newEntry.skillChoices = []
+    if (doc.characteristicChoice) newEntry.characteristicChoices = []
+
+    updateDraft({ talents: [...draft.talents, newEntry] })
   }
 
   // Removes only the highest owned rank — for a non-ranked talent that's
-  // its only rank, so this doubles as "Remove" for those.
-  function rankDown(talent: TalentConfig) {
-    const entries = ownedEntries(talent.name)
+  // its only rank, so this doubles as "Remove" for those. Choices are
+  // stored directly on each entry now, so removing an entry removes its
+  // choices automatically — no separate cleanup step needed.
+  function rankDown(doc: TalentDoc) {
+    const entries = ownedEntries(doc.id)
     if (entries.length === 0) return
     const topEntry = entries[entries.length - 1]
     const without = draft.talents.filter((t) => t !== topEntry)
-    const reconciled = reconcileTalents(without)
-    const { cleanedSkills, cleanedChars } = cleanChoicesFor(reconciled)
+    const reconciled = reconcileTalents(without, bbbTalentDocs)
+    updateDraft({ talents: reconciled })
+  }
+
+  function setSkillChoicePick(targetEntry: TalentEntry, index: number, value: string) {
     updateDraft({
-      talents: reconciled,
-      talentSkillChoices: cleanedSkills,
-      talentCharacteristicChoices: cleanedChars,
+      talents: draft.talents.map((t) => {
+        if (t !== targetEntry) return t
+        const updated = [...(t.skillChoices ?? [])]
+        updated[index] = value
+        return { ...t, skillChoices: updated }
+      }),
     })
   }
 
-  function setSkillChoicePick(key: string, index: number, value: string) {
-    const current = draft.talentSkillChoices[key] ?? []
-    const updated = [...current]
-    updated[index] = value
-    updateDraft({ talentSkillChoices: { ...draft.talentSkillChoices, [key]: updated } })
-  }
-
-  function setCharacteristicChoicePick(key: string, index: number, value: string) {
-    const current = draft.talentCharacteristicChoices[key] ?? []
-    const updated = [...current]
-    updated[index] = value
+  function setCharacteristicChoicePick(targetEntry: TalentEntry, index: number, value: string) {
     updateDraft({
-      talentCharacteristicChoices: { ...draft.talentCharacteristicChoices, [key]: updated },
+      talents: draft.talents.map((t) => {
+        if (t !== targetEntry) return t
+        const updated = [...(t.characteristicChoices ?? [])]
+        updated[index] = value
+        return { ...t, characteristicChoices: updated }
+      }),
     })
   }
+
+  const viewingTalent = viewingTalentId ? bbbTalentDocs.find((d) => d.id === viewingTalentId) ?? null : null
 
   return (
     <div>
@@ -172,7 +172,7 @@ export default function StepTalents({ draft, updateDraft, setCanProceed }: StepP
 
       <div className="space-y-4">
         {TIERS.map((tier) => {
-          const talentsAtTier = BBB_TALENTS.filter((t) => t.tier === tier)
+          const talentsAtTier = bbbTalentDocs.filter((d) => d.tier === tier)
           const slotsFilledAtTier = draft.talents.filter((t) => t.tier === tier).length
 
           return (
@@ -180,24 +180,27 @@ export default function StepTalents({ draft, updateDraft, setCanProceed }: StepP
               <h3 className="mb-2 text-sm font-semibold text-fg-secondary">
                 Tier {tier} <span className="text-fg-muted">({5 * tier} XP each)</span>
               </h3>
-              <div className="flex flex-wrap gap-2">
-                {talentsAtTier.map((talent) => {
-                  const rank = currentRank(talent.name)
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                {talentsAtTier.map((doc) => {
+                  const rank = currentRank(doc.id)
                   const owned = rank > 0
+                  const viewing = viewingTalentId === doc.id
 
                   return (
                     <button
-                      key={talent.name}
-                      onClick={() => setViewingTalent(talent)}
-                      className={`rounded border px-3 py-2 text-sm ${
+                      key={doc.id}
+                      onClick={() => setViewingTalentId(doc.id)}
+                      className={`flex h-12 w-full items-center justify-center rounded border px-2 text-center text-sm leading-tight transition-transform active:scale-95 ${
+                        viewing ? 'ring-2 ring-blue-400 ring-offset-1 ring-offset-page' : ''
+                      } ${
                         owned
-                          ? 'border-accent bg-surface text-fg'
+                          ? 'border-accent bg-accent/10 text-fg'
                           : 'border-border bg-surface text-fg-secondary hover:bg-surface-hover'
                       }`}
                     >
-                      {talent.name}
-                      {owned && talent.ranked
-                        ? talent.tier + rank - 1 > 5
+                      {doc.name}
+                      {owned && doc.ranked
+                        ? doc.tier + rank - 1 > 5
                           ? ` • R${rank} (Tier 5)`
                           : ` • R${rank}`
                         : ''}
@@ -212,58 +215,58 @@ export default function StepTalents({ draft, updateDraft, setCanProceed }: StepP
       </div>
 
       {viewingTalent && (() => {
-        const talent = viewingTalent
-        const rank = currentRank(talent.name)
+        const doc = viewingTalent
+        const rank = currentRank(doc.id)
         const owned = rank > 0
-        const canBuyMore = talent.ranked || rank === 0
+        const canBuyMore = doc.ranked || rank === 0
         const nextRank = rank + 1
-        const nextTier = tierForRank(talent.tier, nextRank)
-        const prereq = getTalentPrerequisiteName(talent.name)
-        const prereqMet = !prereq || hasName(prereq)
+        const nextTier = tierForRank(doc.tier, nextRank)
+        const prereqDoc = doc.prerequisite ? bbbTalentDocs.find((d) => d.id === doc.prerequisite) : null
+        const prereqMet = !doc.prerequisite || hasId(doc.prerequisite)
         const unlockedNext = canBuyTalent(draft.talents, nextTier)
         const affordableNext = 5 * nextTier <= available
 
         let blockedReason: string | null = null
         if (canBuyMore) {
-          if (rank === 0 && !prereqMet) blockedReason = `Requires ${prereq} first`
+          if (rank === 0 && !prereqMet) blockedReason = `Requires ${prereqDoc?.name ?? doc.prerequisite} first`
           else if (!unlockedNext) blockedReason = `Locked — own more Tier ${nextTier - 1} talents`
           else if (!affordableNext) blockedReason = 'Not enough XP'
         }
 
         return (
-          <div className="mt-4 rounded-lg border border-border bg-surface p-4">
+          <div className="mt-4 rounded-lg border border-accent bg-surface p-4">
             <div className="mb-1 flex items-center justify-between">
               <p className="font-semibold text-fg">
-                {talent.name}
-                {owned && talent.ranked && (
+                {doc.name}
+                {owned && doc.ranked && (
                   <span className="ml-2 text-xs text-accent">
                     Rank {rank}
-                    {talent.tier + rank - 1 > 5 ? ' (Tier 5)' : ''}
+                    {doc.tier + rank - 1 > 5 ? ' (Tier 5)' : ''}
                   </span>
                 )}
               </p>
-              <span className="text-xs text-fg-muted">Tier {talent.tier}</span>
+              <span className="text-xs text-fg-muted">Tier {doc.tier}</span>
             </div>
-            <p className="text-sm text-fg-secondary">
-              {talent.description ?? 'No description added yet'}
-            </p>
+            <div className="mt-2 rounded border-l-4 border-accent bg-accent/10 px-3 py-2">
+              <p className="text-sm text-fg">{doc.rules}</p>
+            </div>
 
             <div className="mt-3 flex flex-wrap items-center gap-2">
               {canBuyMore && (
                 <button
-                  onClick={() => buyNextRank(talent)}
+                  onClick={() => buyNextRank(doc)}
                   disabled={!!blockedReason}
                   className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg hover:bg-accent-hover disabled:bg-disabled disabled:text-disabled-fg"
                 >
-                  {rank === 0 ? `Buy (${5 * talent.tier} XP)` : `Rank up to ${nextRank} (${5 * nextTier} XP)`}
+                  {rank === 0 ? `Buy (${5 * doc.tier} XP)` : `Rank up to ${nextRank} (${5 * nextTier} XP)`}
                 </button>
               )}
               {owned && (
                 <button
-                  onClick={() => rankDown(talent)}
+                  onClick={() => rankDown(doc)}
                   className="rounded border border-border-strong px-3 py-1.5 text-xs text-fg hover:bg-surface-hover"
                 >
-                  {talent.ranked && rank > 1 ? `Rank down to ${rank - 1}` : 'Remove'}
+                  {doc.ranked && rank > 1 ? `Rank down to ${rank - 1}` : 'Remove'}
                 </button>
               )}
             </div>
@@ -277,26 +280,28 @@ export default function StepTalents({ draft, updateDraft, setCanProceed }: StepP
         <div className="mt-6 rounded-lg border border-border bg-surface p-4">
           <h3 className="mb-3 text-sm font-semibold text-fg">Skill choices</h3>
           <div className="space-y-3">
-            {skillChoiceEntries.map((e) => {
-              const picked = draft.talentSkillChoices[e.key] ?? []
-              const usedByOtherRanks = Object.entries(draft.talentSkillChoices)
-                .filter(([k]) => k.startsWith(`${e.name}:`) && k !== e.key)
-                .flatMap(([, v]) => v)
+            {skillChoiceEntries.map(({ entry, doc, needed }) => {
+              const picked = entry.skillChoices ?? []
+              const usedByOtherRanks = draft.talents
+                .filter((t) => t.id === doc.id && t !== entry)
+                .flatMap((t) => t.skillChoices ?? [])
+              const restricted = doc.skillChoice?.restriction
 
               return (
-                <div key={e.key} className="flex items-center justify-between gap-4">
+                <div key={`${doc.id}:${entry.rank}`} className="flex items-center justify-between gap-4">
                   <span className="text-sm text-fg">
-                    {e.name}
-                    {e.rank > 1 ? ` (Rank ${e.rank})` : ''}
+                    {doc.name}
+                    {entry.rank > 1 ? ` (Rank ${entry.rank})` : ''}
                   </span>
                   <div className="flex flex-wrap justify-end gap-2">
-                    {Array.from({ length: e.needed }).map((_, i) => {
+                    {Array.from({ length: needed }).map((_, i) => {
                       const pickedElsewhereInThisEntry = picked.filter((_, idx) => idx !== i)
                       return (
                         <select
                           key={i}
                           value={picked[i] ?? ''}
-                          onChange={(ev) => setSkillChoicePick(e.key, i, ev.target.value)}
+                          onChange={(ev) => setSkillChoicePick(entry, i, ev.target.value)}
+                          title={restricted}
                           className="rounded border border-border-strong bg-page px-2 py-1 text-sm text-fg"
                         >
                           <option value="" disabled>
@@ -304,12 +309,11 @@ export default function StepTalents({ draft, updateDraft, setCanProceed }: StepP
                           </option>
                           {BBB_SKILLS.filter(
                             (s) =>
-                              !e.exclude.includes(s) &&
                               !pickedElsewhereInThisEntry.includes(s) &&
                               (!usedByOtherRanks.includes(s) || s === picked[i])
-                          ).map((skill) => (
-                            <option key={skill} value={skill}>
-                              {skill}
+                          ).map((skillId) => (
+                            <option key={skillId} value={skillId}>
+                              {skillDocs.find((d) => d.id === skillId)?.name ?? skillId}
                             </option>
                           ))}
                         </select>
@@ -327,28 +331,28 @@ export default function StepTalents({ draft, updateDraft, setCanProceed }: StepP
         <div className="mt-4 rounded-lg border border-border bg-surface p-4">
           <h3 className="mb-3 text-sm font-semibold text-fg">Characteristic choices</h3>
           <div className="space-y-3">
-            {characteristicChoiceEntries.map((e) => {
-              const picked = draft.talentCharacteristicChoices[e.key] ?? []
+            {characteristicChoiceEntries.map(({ entry, doc, needed }) => {
+              const picked = entry.characteristicChoices ?? []
               // Excludes characteristics already used by OTHER ranks of the
               // same talent (e.g. Dedication can't boost the same stat twice).
-              const usedElsewhere = Object.entries(draft.talentCharacteristicChoices)
-                .filter(([k]) => k.startsWith(`${e.name}:`) && k !== e.key)
-                .flatMap(([, v]) => v)
+              const usedElsewhere = draft.talents
+                .filter((t) => t.id === doc.id && t !== entry)
+                .flatMap((t) => t.characteristicChoices ?? [])
 
               return (
-                <div key={e.key} className="flex items-center justify-between gap-4">
+                <div key={`${doc.id}:${entry.rank}`} className="flex items-center justify-between gap-4">
                   <span className="text-sm text-fg">
-                    {e.name}
-                    {e.rank > 1 ? ` (Rank ${e.rank})` : ''}
+                    {doc.name}
+                    {entry.rank > 1 ? ` (Rank ${entry.rank})` : ''}
                   </span>
                   <div className="flex gap-2">
-                    {Array.from({ length: e.needed }).map((_, i) => {
+                    {Array.from({ length: needed }).map((_, i) => {
                       const pickedElsewhereInThisEntry = picked.filter((_, idx) => idx !== i)
                       return (
                         <select
                           key={i}
                           value={picked[i] ?? ''}
-                          onChange={(ev) => setCharacteristicChoicePick(e.key, i, ev.target.value)}
+                          onChange={(ev) => setCharacteristicChoicePick(entry, i, ev.target.value)}
                           className="rounded border border-border-strong bg-page px-2 py-1 text-sm text-fg"
                         >
                           <option value="" disabled>

@@ -1,32 +1,34 @@
-import type { TalentTier, Characteristics, TalentConfig, SkillDef } from '../genesysCalc'
-import { GENESYS_TALENTS, GENESYS_SKILLS, mergeConfigsByName } from '../genesysCalc'
-export type { TalentConfig }
+// Config only — no embedded data. Tells the sheet what to show and how;
+// the actual skill/talent/quality/object data lives in Firestore.
 
 export interface CareerConfig {
   name: string
-  skills: string[]
+  chosenSkills: { count: number; pool: string[] } // free ranks at creation — base Genesys, all careers grant these
   specialAbility: { name: string; description: string }
 }
 
+// specialAbility here is the SOURCE data — Phase 2's creation wizard
+// copies it onto character.career.specialAbility at creation time. The
+// config still needs to define it somewhere; only the long-term storage
+// location changed (the character document, not a runtime lookup by name).
 export const BBB_CAREERS: CareerConfig[] = [
   {
     name: 'Floor Staff',
-    skills: [
-      'Athletics', 'Charm', 'Coordination', 'Knowledge (Store)',
-      'Negotiation', 'Perception', 'Resilience', 'Vigilance',
-    ],
+    chosenSkills: {
+      count: 4,
+      pool: ['athletics', 'charm', 'coordination', 'knowledge-store', 'negotiation', 'perception', 'resilience', 'vigilance'],
+    },
     specialAbility: {
       name: 'Know the Way',
-      description:
-        'Once per session, automatically know the fastest, safest route to reach any location, object, or person.',
+      description: 'Once per session, automatically know the fastest, safest route to reach any location, object, or person.',
     },
   },
   {
     name: 'Cashier',
-    skills: [
-      'Charm', 'Coercion', 'Cool', 'Coordination',
-      'Deception', 'Knowledge (Store)', 'Operating', 'Perception',
-    ],
+    chosenSkills: {
+      count: 4,
+      pool: ['charm', 'coercion', 'cool', 'coordination', 'deception', 'knowledge-store', 'operating', 'perception'],
+    },
     specialAbility: {
       name: 'Lightning Hands',
       description: 'Once per session, change any non-combat action into an incidental.',
@@ -34,173 +36,135 @@ export const BBB_CAREERS: CareerConfig[] = [
   },
   {
     name: 'Customer Service',
-    skills: [
-      'Charm', 'Coercion', 'Cool', 'Deception',
-      'Discipline', 'Knowledge (Store)', 'Negotiation', 'Operating',
-    ],
+    chosenSkills: {
+      count: 4,
+      pool: ['charm', 'coercion', 'cool', 'deception', 'discipline', 'knowledge-store', 'negotiation', 'operating'],
+    },
     specialAbility: {
       name: 'Customer Is Always Right',
-      description:
-        'Once per session, after failing a social check, pass it instead with 1 success and 2 advantage.',
+      description: 'Once per session, after failing a social check, pass it instead with 1 success and 2 advantage.',
     },
   },
   {
     name: 'Unloader',
-    skills: [
-      'Athletics', 'Coordination', 'Knowledge (Store)', 'Operating',
-      'Perception', 'Resilience', 'Skulduggery', 'Vigilance',
-    ],
+    chosenSkills: {
+      count: 4,
+      pool: ['athletics', 'coordination', 'knowledge-store', 'operating', 'perception', 'resilience', 'skulduggery', 'vigilance'],
+    },
     specialAbility: {
       name: 'Jury Rig',
-      description:
-        'Once per session, repair or bypass one broken object, jammed door, or malfunctioning equipment without a check.',
+      description: "Once per session, repair or bypass one broken object, jammed door, or malfunctioning equipment without a check.",
     },
   },
 ]
 
-// Overrides and additions to the general skill catalog, specific to BB&B.
-const BBB_SKILL_OVERRIDES: (Partial<SkillDef> & { name: string })[] = [
-  {
-    // Deliberate departure from the book: BB&B uses Agility here, not the
-    // book's Cunning. General catalog keeps Cunning as the default for
-    // any future game that wants the standard version.
-    name: 'Skulduggery',
-    characteristic: 'agility',
-    description: 'Lockpicking, pickpocketing, disabling traps, moving unseen.',
-  },
-  { name: 'Knowledge (General)', characteristic: 'intellect', description: 'General facts and trivia.' },
-  { name: 'Knowledge (Cosmic)', characteristic: 'intellect', description: 'Lore of the Beyond.' },
-  { name: 'Knowledge (Store)', characteristic: 'intellect', description: 'Store layout and procedures.' },
-]
-
-const BBB_SKILL_POOL = mergeConfigsByName(GENESYS_SKILLS, BBB_SKILL_OVERRIDES)
-
+// Which skill documents (by id) are valid for BB&B — the sheet renders
+// exactly this set, in this order, grouped by BBB_SKILL_CATEGORY below.
 export const BBB_SKILLS: string[] = [
-  'Athletics', 'Cool', 'Coordination', 'Discipline', 'Operating', 'Perception',
-  'Resilience', 'Skulduggery', 'Vigilance', 'Charm', 'Coercion', 'Deception',
-  'Negotiation', 'Knowledge (General)', 'Knowledge (Cosmic)', 'Knowledge (Store)',
-  'Melee', 'Ranged',
+  'athletics', 'cool', 'coordination', 'discipline', 'operating', 'perception',
+  'resilience', 'skulduggery', 'vigilance', 'charm', 'coercion', 'deception',
+  'negotiation', 'knowledge', 'knowledge-cosmic', 'knowledge-store',
+  'melee', 'ranged',
 ]
 
-// Derived from the pool rather than hand-typed — a skill's characteristic
-// can never drift out of sync with the general catalog by accident.
-export const BBB_SKILL_CHARACTERISTIC: Record<string, keyof Characteristics> = Object.fromEntries(
-  BBB_SKILLS.map((name) => {
-    const def = BBB_SKILL_POOL.find((s) => s.name === name)
-    if (!def) throw new Error(`BBB_SKILLS references "${name}" which has no definition`)
-    return [name, def.characteristic]
-  })
-)
-
-export const BBB_SKILL_DESCRIPTIONS: Record<string, string | undefined> = Object.fromEntries(
-  BBB_SKILLS.map((name) => [name, BBB_SKILL_POOL.find((s) => s.name === name)?.description])
-)
+// Small, deliberate exception: BB&B uses Agility for Skulduggery, not the
+// book's Cunning (folds lockpicking + stealth together, matching how
+// these two are usually both Agility-based elsewhere). This is NOT data
+// merging — the skill's real definition in Firestore is untouched and
+// still says Cunning for any other game. This is just a one-field lookup
+// the sheet checks after fetching a skill's default characteristic,
+// specific to this one game and this one skill.
+export const BBB_SKILL_CHARACTERISTIC_OVERRIDES: Record<string, string> = {
+  skulduggery: 'agility',
+}
 
 export type SkillCategory = 'Combat' | 'Social' | 'Knowledge' | 'General'
 
-export const BBB_SKILL_CATEGORY: Record<string, SkillCategory> = {
-  'Melee': 'Combat',
-  'Ranged': 'Combat',
-  'Charm': 'Social',
-  'Coercion': 'Social',
-  'Deception': 'Social',
-  'Negotiation': 'Social',
-  'Knowledge (General)': 'Knowledge',
-  'Knowledge (Cosmic)': 'Knowledge',
-  'Knowledge (Store)': 'Knowledge',
-  'Athletics': 'General',
-  'Cool': 'General',
-  'Coordination': 'General',
-  'Discipline': 'General',
-  'Operating': 'General',
-  'Perception': 'General',
-  'Resilience': 'General',
-  'Skulduggery': 'General',
-  'Vigilance': 'General',
-}
-
 export const SKILL_CATEGORY_ORDER: SkillCategory[] = ['Combat', 'Social', 'Knowledge', 'General']
 
-// Only 6 talents needed an actual change for BB&B — the ones referencing
-// skills BB&B doesn't have (Leadership, Mechanics). Everything else in
-// GENESYS_TALENTS carries over unmodified.
-const BBB_TALENT_OVERRIDES: (Partial<TalentConfig> & { name: string })[] = [
-  {
-    name: 'Coordinated Assault',
-    description: 'Once per turn, allies engaged with you (up to your Coordination ranks) gain a boost die on combat checks until your next turn. Range extends per rank beyond the first.',
-  },
-  {
-    name: 'Inspiring Rhetoric',
-    description: 'Make a Coordination check; each success heals one strain to an ally in short range, each advantage heals an extra strain to someone already helped.',
-  },
-  {
-    name: 'Field Commander',
-    description: 'Make a Coordination check; success lets a number of allies equal to your Presence each spend 1 strain to take a free maneuver out of turn.',
-  },
-  {
-    name: 'Inspiring Rhetoric (Improved)',
-    description: 'Requires Inspiring Rhetoric. Allies healed by your Inspiring Rhetoric also gain a boost die on checks for a number of rounds equal to your Coordination ranks.',
-  },
-  {
-    name: 'How Convenient!',
-    description: 'Once per session, a Hard Operating check makes a device involved in the current scene conveniently break down.',
-  },
-  {
-    name: 'Mad Inventor',
-    description: 'Once per session, an Operating check (difficulty set by rarity) jury-rigs a working equivalent of an item from scrap.',
-  },
-]
+export const BBB_SKILL_CATEGORY: Record<string, SkillCategory> = {
+  melee: 'Combat',
+  ranged: 'Combat',
+  charm: 'Social',
+  coercion: 'Social',
+  deception: 'Social',
+  negotiation: 'Social',
+  knowledge: 'Knowledge',
+  'knowledge-cosmic': 'Knowledge',
+  'knowledge-store': 'Knowledge',
+  athletics: 'General',
+  cool: 'General',
+  coordination: 'General',
+  discipline: 'General',
+  operating: 'General',
+  perception: 'General',
+  resilience: 'General',
+  skulduggery: 'General',
+  vigilance: 'General',
+}
 
-export const BBB_TALENTS: TalentConfig[] = mergeConfigsByName(GENESYS_TALENTS, BBB_TALENT_OVERRIDES)
+// Which talent documents (by id) are valid for BB&B.
+export const BBB_TALENTS: string[] = [
+  'bought-info', 'clever-retort', 'defensive-sysops', 'desperate-recovery', 'duelist',
+  'durable', 'forager', 'grit', 'hamstring-shot', 'jump-up', 'knack-for-it', 'know-somebody',
+  'lets-ride', 'one-with-nature', 'parry', 'proper-upbringing', 'quick-draw', 'quick-strike',
+  'rapid-reaction', 'second-wind', 'surgeon', 'swift', 'toughened', 'unremarkable',
+  'basic-military-training', 'berserk', 'coordinated-assault', 'counteroffer', 'daring-aviator',
+  'defensive-stance', 'defensive-sysops-improved', 'dual-wielder', 'fan-the-hammer',
+  'heightened-awareness-talent', 'inspiring-rhetoric', 'inventor', 'lucky-strike',
+  'scathing-tirade', 'side-step', 'animal-companion', 'barrel-roll', 'distinctive-style',
+  'dodge', 'eagle-eyes', 'field-commander', 'forgot-to-count', 'full-throttle', 'grenadier',
+  'heroic-will', 'inspiring-rhetoric-improved', 'natural', 'painkiller-specialization',
+  'parry-improved', 'rapid-archery', 'scathing-tirade-improved', 'cant-we-talk-about-this',
+  'deadeye', 'defensive', 'defensive-driving', 'enduring', 'field-commander-improved',
+  'how-convenient', 'inspiring-rhetoric-supreme', 'mad-inventor', 'overcharge',
+  'scathing-tirade-supreme', 'dedication', 'indomitable', 'master', 'overcharge-improved',
+  'ruinous-repartee',
+]
 
 export const BBB_STARTING_XP = 110
 export const BBB_STARTING_CHARACTERISTIC = 2
 export const BBB_MAX_STARTING_CHARACTERISTIC = 5
 export const BBB_MAX_STARTING_SKILL_RANK = 2
 export const BBB_FREE_CAREER_SKILL_PICKS = 4
-export const BBB_SPECIES = 'Human'
-
-// ---- Inventory ----
-
-export type WeaponCategory = 'melee' | 'thrown' | 'special'
-
-export interface WeaponTemplate {
-  id: string
-  name: string
-  category: WeaponCategory
-  skill: 'Melee' | 'Ranged'
-  damage: number // melee: bonus added to Brawn. thrown/special: flat total (before Momentum)
-  crit: number
-  range: string
-  encumbrance: number
-  hasMomentum: boolean
-}
-
-export const BBB_WEAPON_TEMPLATES: WeaponTemplate[] = [
-  { id: 'melee-small-light', name: 'Small Melee (Light)', category: 'melee', skill: 'Melee', damage: 1, crit: 5, range: 'Engaged', encumbrance: 0, hasMomentum: false },
-  { id: 'melee-small-heavy', name: 'Small Melee (Heavy)', category: 'melee', skill: 'Melee', damage: 2, crit: 4, range: 'Engaged', encumbrance: 1, hasMomentum: false },
-  { id: 'melee-medium-light', name: 'Medium Melee (Light)', category: 'melee', skill: 'Melee', damage: 3, crit: 4, range: 'Engaged', encumbrance: 2, hasMomentum: false },
-  { id: 'melee-medium-heavy', name: 'Medium Melee (Heavy)', category: 'melee', skill: 'Melee', damage: 4, crit: 4, range: 'Engaged', encumbrance: 2, hasMomentum: false },
-  { id: 'melee-large-light', name: 'Large Melee (Light)', category: 'melee', skill: 'Melee', damage: 5, crit: 3, range: 'Engaged', encumbrance: 3, hasMomentum: false },
-  { id: 'melee-large-heavy', name: 'Large Melee (Heavy)', category: 'melee', skill: 'Melee', damage: 6, crit: 2, range: 'Engaged', encumbrance: 4, hasMomentum: false },
-  { id: 'thrown-small-light', name: 'Small Thrown (Light)', category: 'thrown', skill: 'Ranged', damage: 2, crit: 6, range: 'Short', encumbrance: 0, hasMomentum: true },
-  { id: 'thrown-small-heavy', name: 'Small Thrown (Heavy)', category: 'thrown', skill: 'Ranged', damage: 3, crit: 6, range: 'Short', encumbrance: 1, hasMomentum: true },
-  { id: 'thrown-medium-light', name: 'Medium Thrown (Light)', category: 'thrown', skill: 'Ranged', damage: 4, crit: 5, range: 'Short', encumbrance: 1, hasMomentum: true },
-  { id: 'thrown-medium-heavy', name: 'Medium Thrown (Heavy)', category: 'thrown', skill: 'Ranged', damage: 5, crit: 5, range: 'Short', encumbrance: 2, hasMomentum: true },
-  { id: 'thrown-large-light', name: 'Large Thrown (Light)', category: 'thrown', skill: 'Ranged', damage: 6, crit: 4, range: 'Short', encumbrance: 3, hasMomentum: true },
-  { id: 'thrown-large-heavy', name: 'Large Thrown (Heavy)', category: 'thrown', skill: 'Ranged', damage: 7, crit: 3, range: 'Short', encumbrance: 3, hasMomentum: true },
-  { id: 'handgun', name: 'Handgun', category: 'special', skill: 'Ranged', damage: 6, crit: 3, range: 'Medium', encumbrance: 1, hasMomentum: false },
-]
-
-// Chargen restriction: only weapons at or below this damage are available
-// when creating a character — stronger ones get found/earned during play.
 export const BBB_MAX_STARTING_WEAPON_DAMAGE = 3
 
-// Every character starts with this exact armor — new employees all get the
-// same minimal gear. Only the name is player-chosen.
-export const BBB_STARTING_ARMOR = {
-  soak: 1,
-  meleeDefense: 0,
-  rangedDefense: 0,
-  encumbrance: 1,
-}
+// Object ids for BB&B's actual starting items — filters out the earlier
+// generic schema-validation Objects (Store Vest, etc.) that aren't part
+// of BB&B's real catalog. Concrete, pre-named, pre-qualified items now,
+// not templates — the player picks one directly, nothing to customize.
+export const BBB_WEAPON_IDS: string[] = [
+  'stress-ball', 'coffee-mug', 'candle', 'paperweight',
+  'box-cutter', 'scissors', 'letter-opener', 'knife',
+  'meat-tenderizer', 'wrench', 'mop-broom-handle', 'yardstick',
+]
+
+export const BBB_ARMOR_IDS: string[] = ['work-apron', 'thick-jacket', 'layered-cardboard', 'pot-lid-shield-rig']
+
+export const BBB_UNIVERSAL_GEAR_ID = 'walkie-talkie'
+
+export const BBB_GEAR_IDS: string[] = [
+  'duct-tape', 'first-aid-kit', 'water-bottle-bbb', 'energy-drink', 'flashlight-bbb',
+  'break-room-snacks', 'umbrella', 'cleaning-supplies', 'scanner', 'blanket',
+]
+
+// Not explicitly settled — picked 2 as a reasonable default (out of 10
+// available), same shape as other "pick N" chargen steps. Easy to adjust.
+export const BBB_FREE_GEAR_PICKS = 2
+
+export const CURRENCY_LABEL = 'Credits'
+
+// BB&B has exactly one fixed species — every character is Human, no
+// picker needed. CreateCharacter.tsx depends on this directly.
+export const BBB_SPECIES = 'Human'
+
+// Which equipment slots this game actually uses — BB&B is deliberately
+// minimal, narrative combat isn't the focus.
+export const ACTIVE_SLOTS = ['Main Hand', 'Off Hand', 'Chest'] as const
+
+// Which sheet sections render for this game — survival tracks, sickness,
+// and faction reputation are Backrooms-only concepts, hidden entirely here.
+export const VISIBLE_SHEET_SECTIONS = [
+  'characteristics', 'skills', 'talents', 'inventory', 'status',
+  'motivations', 'description', 'currency', 'notes',
+] as const

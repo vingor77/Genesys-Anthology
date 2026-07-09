@@ -2,78 +2,85 @@ import { useEffect } from 'react'
 import {
   BBB_CAREERS,
   BBB_SKILLS,
-  BBB_SKILL_CHARACTERISTIC,
   BBB_SKILL_CATEGORY,
-  BBB_SKILL_DESCRIPTIONS,
+  BBB_SKILL_CHARACTERISTIC_OVERRIDES,
   SKILL_CATEGORY_ORDER,
   BBB_MAX_STARTING_SKILL_RANK,
 } from '../../lib/gameConfigs/bbb'
-import { skillCost, calculateDicePool, totalSpentXP } from '../../lib/genesysCalc'
+import { skillCost, calculateDicePool, totalSpentXP, computeCareerSkills, type Characteristics } from '../../lib/genesysCalc'
 import type { StepProps } from '../../pages/CreateCharacter'
 
-export default function StepSkills({ draft, updateDraft, setCanProceed }: StepProps) {
+export default function StepSkills({ draft, updateDraft, setCanProceed, maxSkillRank, skillDocs, talentDocs }: StepProps) {
+  const rankCap = maxSkillRank ?? BBB_MAX_STARTING_SKILL_RANK
+
   useEffect(() => {
     setCanProceed(true)
   }, [setCanProceed])
 
-  const career = BBB_CAREERS.find((c) => c.name === draft.career)
-  const careerSkillNames = career?.skills ?? []
+  const career = BBB_CAREERS.find((c) => c.name === draft.career.name)
+  const careerSkillNames = computeCareerSkills(draft.career, draft.talents, talentDocs)
 
   const spent = totalSpentXP(
     draft.characteristics,
     draft.skills,
     careerSkillNames,
-    draft.freeSkillNames,
+    draft.career.chosenSkills,
     draft.talents
   )
   const available = draft.totalXP - spent
 
-  function getRank(skillName: string): number {
-    return draft.skills.find((s) => s.name === skillName)?.rank ?? 0
+  function getRank(skillId: string): number {
+    return draft.skills.find((s) => s.name === skillId)?.rank ?? 0
   }
 
-  function setRank(skillName: string, rank: number) {
+  function setRank(skillId: string, rank: number) {
     updateDraft({
-      skills: draft.skills.map((s) => (s.name === skillName ? { ...s, rank } : s)),
+      skills: draft.skills.map((s) => (s.name === skillId ? { ...s, rank } : s)),
     })
   }
 
-  function increase(skillName: string, isCareer: boolean, freeRank: 0 | 1) {
-    const current = getRank(skillName)
-    if (current >= BBB_MAX_STARTING_SKILL_RANK) return
+  function increase(skillId: string, isCareer: boolean, freeRank: 0 | 1) {
+    const current = getRank(skillId)
+    if (current >= rankCap) return
     const cost = skillCost(current + 1, isCareer, freeRank) - skillCost(current, isCareer, freeRank)
     if (cost > available) return
-    setRank(skillName, current + 1)
+    setRank(skillId, current + 1)
   }
 
-  function decrease(skillName: string, freeRank: 0 | 1) {
-    const current = getRank(skillName)
+  function decrease(skillId: string, freeRank: 0 | 1) {
+    const current = getRank(skillId)
     if (current <= freeRank) return
-    setRank(skillName, current - 1)
+    setRank(skillId, current - 1)
   }
 
-  function renderSkillRow(skillName: string) {
-    const isCareer = careerSkillNames.includes(skillName)
-    const rank = getRank(skillName)
-    const freeRank: 0 | 1 = draft.freeSkillNames.includes(skillName) ? 1 : 0
-    const characteristic = BBB_SKILL_CHARACTERISTIC[skillName]
+  function renderSkillRow(skillId: string) {
+    const doc = skillDocs.find((s) => s.id === skillId)
+    if (!doc) return null
+
+    const isCareer = careerSkillNames.includes(skillId)
+    const rank = getRank(skillId)
+    const freeRank: 0 | 1 = draft.career.chosenSkills.includes(skillId) ? 1 : 0
+    // BB&B overrides Skulduggery to Agility — checked after the doc's own
+    // default, same lookup used everywhere this matters.
+    const characteristic = (BBB_SKILL_CHARACTERISTIC_OVERRIDES[skillId] ??
+      doc.characteristic) as keyof Characteristics
     const characteristicRank = draft.characteristics[characteristic]
     const pool = calculateDicePool(characteristicRank, rank)
     const nextCost =
-      rank < BBB_MAX_STARTING_SKILL_RANK
+      rank < rankCap
         ? skillCost(rank + 1, isCareer, freeRank) - skillCost(rank, isCareer, freeRank)
         : null
 
     return (
       <div
-        key={skillName}
+        key={skillId}
         className={`flex items-center justify-between rounded border bg-surface px-3 py-2 ${
           isCareer ? 'border-accent' : 'border-border'
         }`}
       >
         <div>
           <p className="text-sm text-fg">
-            {skillName}{' '}
+            {doc.name}{' '}
             <span className="text-xs text-fg-muted">
               ({characteristic.slice(0, 3).toUpperCase()})
             </span>
@@ -83,13 +90,11 @@ export default function StepSkills({ draft, updateDraft, setCanProceed }: StepPr
             {pool.ability}A {pool.proficiency}P
             {nextCost !== null && ` · +1 costs ${nextCost}`}
           </p>
-          {BBB_SKILL_DESCRIPTIONS[skillName] && (
-            <p className="mt-0.5 max-w-xs text-xs text-fg-muted">{BBB_SKILL_DESCRIPTIONS[skillName]}</p>
-          )}
+          <p className="mt-0.5 max-w-xs text-xs text-green-400">{doc.description}</p>
         </div>
         <div className="flex flex-shrink-0 items-center gap-2">
           <button
-            onClick={() => decrease(skillName, freeRank)}
+            onClick={() => decrease(skillId, freeRank)}
             disabled={rank <= freeRank}
             className="h-7 w-7 rounded border border-border-strong text-fg hover:bg-surface-hover disabled:opacity-30"
           >
@@ -97,9 +102,9 @@ export default function StepSkills({ draft, updateDraft, setCanProceed }: StepPr
           </button>
           <span className="w-4 text-center text-fg">{rank}</span>
           <button
-            onClick={() => increase(skillName, isCareer, freeRank)}
+            onClick={() => increase(skillId, isCareer, freeRank)}
             disabled={
-              rank >= BBB_MAX_STARTING_SKILL_RANK || (nextCost !== null && nextCost > available)
+              rank >= rankCap || (nextCost !== null && nextCost > available)
             }
             className="h-7 w-7 rounded border border-border-strong text-fg hover:bg-surface-hover disabled:opacity-30"
           >

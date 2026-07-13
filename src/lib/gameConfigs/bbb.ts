@@ -80,7 +80,7 @@ export const BBB_SKILL_CHARACTERISTIC_OVERRIDES: Record<string, string> = {
 
 export type SkillCategory = 'Combat' | 'Social' | 'Knowledge' | 'General'
 
-export const SKILL_CATEGORY_ORDER: SkillCategory[] = ['Combat', 'Social', 'Knowledge', 'General']
+export const SKILL_CATEGORY_ORDER: SkillCategory[] = ['General', 'Combat', 'Social', 'Knowledge']
 
 export const BBB_SKILL_CATEGORY: Record<string, SkillCategory> = {
   melee: 'Combat',
@@ -105,21 +105,21 @@ export const BBB_SKILL_CATEGORY: Record<string, SkillCategory> = {
 
 // Which talent documents (by id) are valid for BB&B.
 export const BBB_TALENTS: string[] = [
-  'bought-info', 'clever-retort', 'defensive-sysops', 'desperate-recovery', 'duelist',
-  'durable', 'forager', 'grit', 'hamstring-shot', 'jump-up', 'knack-for-it', 'know-somebody',
-  'lets-ride', 'one-with-nature', 'parry', 'proper-upbringing', 'quick-draw', 'quick-strike',
-  'rapid-reaction', 'second-wind', 'surgeon', 'swift', 'toughened', 'unremarkable',
-  'basic-military-training', 'berserk', 'coordinated-assault', 'counteroffer', 'daring-aviator',
-  'defensive-stance', 'defensive-sysops-improved', 'dual-wielder', 'fan-the-hammer',
-  'heightened-awareness-talent', 'inspiring-rhetoric', 'inventor', 'lucky-strike',
-  'scathing-tirade', 'side-step', 'animal-companion', 'barrel-roll', 'distinctive-style',
-  'dodge', 'eagle-eyes', 'field-commander', 'forgot-to-count', 'full-throttle', 'grenadier',
-  'heroic-will', 'inspiring-rhetoric-improved', 'natural', 'painkiller-specialization',
-  'parry-improved', 'rapid-archery', 'scathing-tirade-improved', 'cant-we-talk-about-this',
-  'deadeye', 'defensive', 'defensive-driving', 'enduring', 'field-commander-improved',
-  'how-convenient', 'inspiring-rhetoric-supreme', 'mad-inventor', 'overcharge',
-  'scathing-tirade-supreme', 'dedication', 'indomitable', 'master', 'overcharge-improved',
-  'ruinous-repartee',
+  // Tier 1
+  'bought-info', 'clever-retort', 'desperate-recovery', 'durable', 'grit', 'jump-up',
+  'knack-for-it', 'know-somebody', 'parry', 'proper-upbringing', 'quick-draw', 'quick-strike',
+  'rapid-reaction', 'second-wind', 'swift', 'toughened',
+  // Tier 2
+  'coordinated-assault', 'counteroffer', 'heightened-awareness-talent', 'inspiring-rhetoric',
+  'inventor', 'lucky-strike', 'scathing-tirade', 'side-step',
+  // Tier 3
+  'dodge', 'field-commander', 'forgot-to-count', 'inspiring-rhetoric-improved',
+  'painkiller-specialization', 'scathing-tirade-improved', 'heroic-will', 'natural',
+  // Tier 4
+  'cant-we-talk-about-this', 'deadeye', 'defensive', 'enduring', 'field-commander-improved',
+  'how-convenient', 'inspiring-rhetoric-supreme', 'mad-inventor', 'scathing-tirade-supreme',
+  // Tier 5
+  'dedication', 'indomitable', 'master', 'ruinous-repartee',
 ]
 
 export const BBB_STARTING_XP = 110
@@ -152,7 +152,7 @@ export const BBB_GEAR_IDS: string[] = [
 // available), same shape as other "pick N" chargen steps. Easy to adjust.
 export const BBB_FREE_GEAR_PICKS = 2
 
-export const CURRENCY_LABEL = 'Credits'
+export const CURRENCY_LABEL = 'Dollars'
 
 // BB&B has exactly one fixed species — every character is Human, no
 // picker needed. CreateCharacter.tsx depends on this directly.
@@ -168,3 +168,24 @@ export const VISIBLE_SHEET_SECTIONS = [
   'characteristics', 'skills', 'talents', 'inventory', 'status',
   'motivations', 'description', 'currency', 'notes',
 ] as const
+
+// Which Object fields render in item displays. The structure supports
+// every field for any game — this only controls what BB&B specifically
+// hides (crafting-system fields, per-stack removal counts, Light Source's
+// sub-fields). A future Backrooms config would show all of these, since
+// its crafting/survival systems actually use them.
+export const VISIBLE_ITEM_FIELDS = {
+  factionExclusive: false,
+  craftingMaterial: false,
+  repairMaterials: false,
+  craftSkill: false,
+  hungerStacksRemoved: false,
+  thirstStacksRemoved: false,
+  lightSourceDetails: false, // covers light_step_boost/light_cap/duration/fuel_type as a group
+  noclip: false, // covers noclip_enabled/noclip_skill/noclip_difficulty as a group
+  sanity: false, // covers sanity_restored/sanity_threshold_required as a group
+  timekeeping: false, // covers timekeeping/timekeeping_accurate as a group
+  suppressEffect: false,
+  protectionType: false,
+  curesSickness: false,
+}

@@ -13,6 +13,7 @@ import MySessions from './pages/MySessions'
 import NotFound from './pages/NotFound'
 import DeleteAccount from './pages/DeleteAccount'
 import CreateCharacter from './pages/CreateCharacter'
+import CharacterSheet from './pages/CharacterSheet'
 import AdminSeedPage from './seed/AdminSeedPage'
 
 function App() {
@@ -36,6 +37,7 @@ function App() {
               <Route path="/sessions" element={<MySessions />} />
               <Route path="/delete-account" element={<DeleteAccount />} />
               <Route path="/sessions/:sessionId/characters/new" element={<CreateCharacter />} />
+              <Route path="/characters/:characterId" element={<CharacterSheet />} />
             </Route>
           </Route>
         </Routes>

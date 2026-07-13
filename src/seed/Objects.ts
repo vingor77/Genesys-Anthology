@@ -23,11 +23,15 @@ export interface ObjectDoc {
   // no schema change is needed later).
   sessionId?: string
   price?: number
+  is_quest_item?: boolean
+  faction_exclusive?: string
+  is_crafting_material?: boolean
   slots?: string[]
   effect?: string
   situational?: { condition: string; effect: string }
   durability?: number
   uses?: number
+  usesCannotRestore?: boolean
   // Weapon fields
   damage?: number
   damageType?: 'Brawn-based' | 'Fixed'
@@ -86,17 +90,20 @@ export const OBJECTS: ObjectDoc[] = [
     soak: 2, meleeDefense: 1, rangedDefense: 1,
   },
 
-  // ---- Food (2) ----
+  // ---- Food (2) — leftover from the original "2 per type" schema
+  // validation batch, not part of BBB's real catalog. Delete-candidate
+  // once you clean these up; usesCannotRestore applied per your call in
+  // the meantime since they're still live in the picker either way. ----
   {
     id: 'stale-granola-bar', name: 'Stale Granola Bar', type: 'Food',
     description: 'Past its expiration date, but still edible.',
-    rarity: 0, encumbrance: 0, uses: 1,
+    rarity: 0, encumbrance: 0, uses: 1, usesCannotRestore: true,
     hunger_stacks_removed: 1,
   },
   {
     id: 'canned-rations', name: 'Canned Rations', type: 'Food',
     description: 'A dense, long-shelf-life meal in a can.',
-    rarity: 1, encumbrance: 1, uses: 1,
+    rarity: 1, encumbrance: 1, uses: 1, usesCannotRestore: true,
     hunger_stacks_removed: 3,
     bonus_effects: 'Also recovers 1 strain.',
   },
@@ -185,12 +192,12 @@ export const OBJECTS: ObjectDoc[] = [
   { id: 'walkie-talkie', name: 'Walkie-Talkie', type: 'Tool', description: 'Long range, static-prone. Adds a boost die to coordinated actions with someone else carrying one.', rarity: 0, encumbrance: 1, effect: 'Adds a boost die to coordinated actions with another Walkie-Talkie carrier.' },
 
   // ---- Gear (10, spread across the original 5 categories) ----
-  { id: 'duct-tape', name: 'Duct Tape', type: 'Tool', description: 'Holds together more than it should.', rarity: 0, encumbrance: 1, uses: 5, effect: 'Adds a boost die to repair attempts.' },
+  { id: 'duct-tape', name: 'Duct Tape', type: 'Tool', description: 'Holds together more than it should.', rarity: 0, encumbrance: 1, uses: 5, usesCannotRestore: true, effect: 'Adds a boost die to repair attempts.' },
   { id: 'first-aid-kit', name: 'First Aid Kit', type: 'Tool', description: 'Bandages, antiseptic, the basics.', rarity: 1, encumbrance: 1, uses: 3, effect: 'Heal 2 wounds with an Average Resilience check.' },
   { id: 'water-bottle-bbb', name: 'Water Bottle', type: 'Drink', description: 'Refillable, mostly empty.', rarity: 0, encumbrance: 0, uses: 1, thirst_stacks_removed: 1, bonus_effects: 'Recover 1 strain.' },
-  { id: 'energy-drink', name: 'Energy Drink', type: 'Drink', description: 'A jolt now, a crash later.', rarity: 0, encumbrance: 0, uses: 1, bonus_effects: 'Recover 2 strain and gain a boost die on your next check; suffer 2 strain from the crash after about an hour.' },
+  { id: 'energy-drink', name: 'Energy Drink', type: 'Drink', description: 'A jolt now, a crash later.', rarity: 0, encumbrance: 0, uses: 1, usesCannotRestore: true, bonus_effects: 'Recover 2 strain and gain a boost die on your next check; suffer 2 strain from the crash after about an hour.' },
   { id: 'flashlight-bbb', name: 'Flashlight', type: 'Light Source', description: 'Standard store-issue flashlight.', rarity: 0, encumbrance: 1, effect: 'Removes a setback die caused by darkness.', light_step_boost: 1, light_cap: 'Dim', fuel_type: 'Batteries' },
-  { id: 'break-room-snacks', name: 'Break Room Snacks', type: 'Food', description: 'Communal, and never quite enough.', rarity: 0, encumbrance: 0, uses: 1, bonus_effects: 'Recover 1 strain during a break.' },
+  { id: 'break-room-snacks', name: 'Break Room Snacks', type: 'Food', description: 'Communal, and never quite enough.', rarity: 0, encumbrance: 0, uses: 1, usesCannotRestore: true, bonus_effects: 'Recover 1 strain during a break.' },
   { id: 'umbrella', name: 'Umbrella', type: 'Tool', description: 'Awkward, but better than nothing when opened.', rarity: 0, encumbrance: 1, effect: 'Adds 1 ranged defense while opened.' },
   { id: 'cleaning-supplies', name: 'Cleaning Supplies', type: 'Tool', description: 'A caddy of sprays and rags.', rarity: 0, encumbrance: 2, effect: 'Adds a boost die to checks the supplies are relevant to.' },
   { id: 'scanner', name: 'Scanner', type: 'Tool', description: 'A barcode scanner. Purely flavor — no mechanical effect.', rarity: 0, encumbrance: 0 },

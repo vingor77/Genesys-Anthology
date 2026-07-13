@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { writeBatch, doc } from 'firebase/firestore'
 import { db } from '../lib/firebase'
 import { QUALITIES } from './Qualities'
@@ -14,6 +15,7 @@ import { OBJECTS } from './Objects'
 export default function AdminSeedPage() {
   const [status, setStatus] = useState<'idle' | 'working' | 'done' | 'error'>('idle')
   const [message, setMessage] = useState('')
+  const [testCharacterId, setTestCharacterId] = useState('')
 
   async function seedCollection(collectionName: string, items: { id: string }[]) {
     setStatus('working')
@@ -91,6 +93,27 @@ export default function AdminSeedPage() {
           {message}
         </p>
       )}
+
+      <div className="mt-6 max-w-md rounded-lg border border-border bg-surface p-4">
+        <h3 className="text-sm font-semibold text-fg">Test: view a character sheet</h3>
+        <p className="mt-1 text-xs text-fg-muted">
+          Paste a character's Firestore document ID (from the console) to jump straight to its sheet.
+        </p>
+        <div className="mt-2 flex gap-2">
+          <input
+            value={testCharacterId}
+            onChange={(e) => setTestCharacterId(e.target.value)}
+            placeholder="Character document ID"
+            className="flex-1 rounded border border-border-strong bg-page px-3 py-2 text-sm text-fg"
+          />
+          <Link
+            to={`/characters/${testCharacterId}`}
+            className="rounded bg-accent px-4 py-2 text-sm font-medium text-accent-fg hover:bg-accent-hover"
+          >
+            View Sheet
+          </Link>
+        </div>
+      </div>
 
       {/* Add one button per collection here as each is drafted:
           Skills, Talents, Critical Injuries, Objects — same pattern,

@@ -53,6 +53,11 @@ export interface CharacterDraft {
   flaw: string
   desire: string
   fear: string
+  // Optional — Personality (above) stays mandatory to proceed, but
+  // physical appearance is the kind of thing that's often easier to
+  // settle once you've actually seen the character played a bit, so
+  // nothing here blocks moving forward.
+  description: { gender?: string; age?: string; height?: string; build?: string; hair?: string; eyes?: string; notable?: string }
 }
 
 // Steps no longer render their own Back/Next — they only report whether
@@ -76,7 +81,7 @@ export interface StepProps {
 
 const STEP_LABELS = [
   'Basics', 'Career', 'Free Skills', 'Characteristics', 'Skills',
-  'Talents', 'Inventory', 'Gear', 'Personality', 'Review',
+  'Talents', 'Inventory', 'Gear', 'Identity', 'Review',
 ]
 
 // The single source of truth for "what a blank draft looks like" — used
@@ -104,6 +109,7 @@ export function buildInitialDraft(playerName: string): CharacterDraft {
     flaw: '',
     desire: '',
     fear: '',
+    description: {},
   }
 }
 

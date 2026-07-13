@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { BBB_TALENTS, BBB_SKILLS } from '../../lib/gameConfigs/bbb'
+import { BBB_TALENTS, BBB_SKILLS, BBB_CAREERS } from '../../lib/gameConfigs/bbb'
 import {
   canBuyTalent,
   totalSpentXP,
@@ -27,10 +27,11 @@ export default function StepTalents({ draft, updateDraft, setCanProceed, talentD
   const bbbTalentDocs = talentDocs.filter((d) => BBB_TALENTS.includes(d.id))
 
   const career = draft.career
+  const careerConfig = BBB_CAREERS.find((c) => c.name === career.name)
   const spent = totalSpentXP(
     draft.characteristics,
     draft.skills,
-    computeCareerSkills(draft.career, draft.talents, talentDocs),
+    computeCareerSkills(careerConfig?.chosenSkills.pool ?? [], draft.talents, talentDocs),
     career.chosenSkills,
     draft.talents
   )

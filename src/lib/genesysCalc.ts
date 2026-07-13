@@ -3,10 +3,12 @@ import type {
   TalentEntry,
   SkillDoc,
   TalentDoc,
+  QualityDoc,
   ObjectDoc,
   InventoryEntry,
   EquippedSlots,
   CriticalInjuryEntry,
+  StatusEntry,
 } from './characters'
 
 export interface Characteristics {
@@ -137,6 +139,43 @@ export function computeTalentBonuses(talents: TalentEntry[], talentDocs: TalentD
   return totals
 }
 
+// Sums statBonus from every active status — was built into the schema
+// and the Add Status form, but never actually wired into the real stat
+// calculation, so it had zero effect until now. Same pattern as
+// computeTalentBonuses/computeEquippedStatBonuses above.
+export function computeStatusBonuses(status: StatusEntry[]): Required<DerivedStatBonuses> {
+  const totals = { soak: 0, meleeDefense: 0, rangedDefense: 0, woundThreshold: 0, strainThreshold: 0 }
+  for (const s of status) {
+    if (!s.statBonus) continue
+    for (const [stat, amount] of Object.entries(s.statBonus) as [string, number | undefined][]) {
+      if (amount !== undefined && stat in totals) {
+        totals[stat as keyof typeof totals] += amount
+      }
+    }
+  }
+  return totals
+}
+
+// A status-driven characteristic change is a temporary overlay on top of
+// the base value, never written into character.characteristics itself —
+// that field stays reserved for permanent, XP-purchased increases. This
+// computes what the characteristic actually IS right now, floored at 1
+// (not the XP-spend floor of BBB_STARTING_CHARACTERISTIC, which only
+// applies to voluntarily lowering a purchased increase — a status can
+// genuinely push a character below their starting value).
+export function computeEffectiveCharacteristics(base: Characteristics, status: StatusEntry[]): Characteristics {
+  const effective = { ...base }
+  for (const s of status) {
+    if (!s.characteristicModifiers) continue
+    for (const [key, amount] of Object.entries(s.characteristicModifiers) as [keyof Characteristics, number | undefined][]) {
+      if (amount !== undefined) {
+        effective[key] = Math.min(6, Math.max(1, effective[key] + amount))
+      }
+    }
+  }
+  return effective
+}
+
 export function derivedStats(characteristics: Characteristics, bonuses: DerivedStatBonuses = {}) {
   return {
     soak: characteristics.brawn + (bonuses.soak ?? 0),
@@ -186,8 +225,16 @@ export function totalSpentXP(
 // needed since spent XP is always recalculated live, never stored
 // per-purchase (see the "instant refund" reasoning from when this was
 // first designed).
+// careerPool is the career's full skill pool (typically 8 skills, all
+// career-priced) — NOT character.career.chosenSkills, which is only the
+// 4 skills that got a free starting rank. Those are two different
+// concepts: every skill in the pool is priced as career, but only the
+// chosen 4 also start with a free rank. An earlier version of this
+// function conflated them, using chosenSkills as if it were the pool —
+// silently meant only 4 skills were ever priced as career, in both the
+// wizard and the sheet, until caught by testing.
 export function computeCareerSkills(
-  career: { chosenSkills: string[] },
+  careerPool: string[],
   talents: TalentEntry[],
   talentDocs: TalentDoc[]
 ): string[] {
@@ -196,7 +243,7 @@ export function computeCareerSkills(
     if (!doc?.skillChoice?.grantsCareer) return []
     return [...(doc.skillChoice.fixedSkills ?? []), ...(t.skillChoices ?? [])]
   })
-  return [...new Set([...career.chosenSkills, ...fromTalents])]
+  return [...new Set([...careerPool, ...fromTalents])]
 }
 
 // Reads statModifiers from every equipped object, accounting for
@@ -207,30 +254,110 @@ export function computeCareerSkills(
 export function computeEquippedStatBonuses(
   equippedSlots: EquippedSlots,
   inventory: InventoryEntry[],
-  objectDocs: Map<string, ObjectDoc>
+  objectDocs: Map<string, ObjectDoc>,
+  qualityDocs: QualityDoc[]
 ): Required<DerivedStatBonuses> {
   const totals = { soak: 0, meleeDefense: 0, rangedDefense: 0, woundThreshold: 0, strainThreshold: 0 }
-  const equippedObjectIds = new Set(Object.values(equippedSlots).filter((id): id is string => !!id))
+  const equippedEntryIds = new Set(Object.values(equippedSlots).filter((id): id is string => !!id))
 
   for (const entry of inventory) {
-    if (!equippedObjectIds.has(entry.objectId)) continue
+    if (!equippedEntryIds.has(entry.id)) continue
     const doc = objectDocs.get(entry.objectId)
-    if (!doc?.statModifiers) continue
+    if (!doc) continue
 
-    let degradation = 1
-    if (entry.currentDurability !== undefined) {
-      if (entry.currentDurability <= 0) degradation = 0
-      else if (entry.currentDurability === 1) degradation = 0.5
+    // Armor's own soak/defense — dedicated fields on the Object, not a
+    // generic statModifiers array. Degradation follows the exact tiered
+    // table (3 Intact / 2 Damaged / 1 Heavily Damaged / 0 Broken), not a
+    // linear formula — an earlier version approximated this with a
+    // simple multiplier, which didn't match the real rule at all.
+    // Durability 0 is handled defensively here (0 contribution) even
+    // though a Broken item should already be auto-unequipped elsewhere —
+    // belt-and-suspenders in case that ever gets bypassed.
+    if (doc.type === 'Armor') {
+      const durability = entry.currentDurability ?? 3
+      if (durability >= 3) {
+        totals.soak += doc.soak ?? 0
+        totals.meleeDefense += doc.meleeDefense ?? 0
+        totals.rangedDefense += doc.rangedDefense ?? 0
+      } else if (durability === 2) {
+        totals.soak += Math.max(0, (doc.soak ?? 0) - 1)
+        totals.meleeDefense += doc.meleeDefense ?? 0
+        totals.rangedDefense += doc.rangedDefense ?? 0
+      } else if (durability === 1) {
+        totals.soak += Math.max(0, (doc.soak ?? 0) - 2)
+        totals.meleeDefense += Math.max(0, (doc.meleeDefense ?? 0) - 1)
+        totals.rangedDefense += Math.max(0, (doc.rangedDefense ?? 0) - 1)
+      }
+      // durability 0 (Broken): contributes nothing, matching "provides no soak or defense"
     }
 
-    for (const mod of doc.statModifiers) {
-      if (!mod.autoApply) continue
-      if (mod.stat in totals) {
-        totals[mod.stat as keyof typeof totals] += Math.floor(mod.amount * degradation)
+    // Quality-derived passive bonuses — e.g. a weapon carrying Defensive
+    // or Deflection. No durability scaling here: a Broken item is
+    // auto-unequipped elsewhere, so it's never in the equipped set this
+    // function sees in the first place — nothing left to degrade.
+    for (const itemQuality of doc.qualities ?? []) {
+      const qualityDoc = qualityDocs.find((q) => q.name === itemQuality.name)
+      if (!qualityDoc?.statModifiers) continue
+      const rank = itemQuality.rank ?? 1
+      for (const mod of qualityDoc.statModifiers) {
+        if (mod.stat in totals) {
+          totals[mod.stat as keyof typeof totals] += mod.amount * rank
+        }
       }
     }
   }
   return totals
+}
+
+export function encumbranceCapacity(brawn: number): number {
+  return 5 + brawn
+}
+
+// Worn armor is lighter to carry than the same piece stuffed in a bag —
+// matches the discount already established in the old sheet's inline
+// calculation, just moved here so it's one source of truth like every
+// other derived-stat formula instead of scattered in component code.
+export function computeEncumbrance(
+  inventory: InventoryEntry[],
+  equippedSlots: EquippedSlots,
+  objectDocs: Map<string, ObjectDoc>
+): number {
+  const equippedEntryIds = new Set(Object.values(equippedSlots).filter((id): id is string => !!id))
+
+  return inventory.reduce((sum, entry) => {
+    const doc = objectDocs.get(entry.objectId)
+    if (!doc) return sum
+    const enc = doc.encumbrance ?? 0
+    if (doc.type === 'Armor' && equippedEntryIds.has(entry.id)) {
+      return sum + Math.max(0, enc - 3)
+    }
+    return sum + enc
+  }, 0)
+}
+
+export interface DurabilityState {
+  label: 'Intact' | 'Damaged' | 'Heavily Damaged' | 'Broken'
+  effect: string
+}
+
+// Weapon degradation (setback dice, upgraded difficulty) affects attack
+// rolls, not a passive stat this app already tracks — there's no dice
+// roller built yet to apply these automatically to. Informational only,
+// same "display, don't force-automate a system that doesn't exist yet"
+// approach used elsewhere. Armor's soak/defense penalties ARE already
+// real passive stats, so those get computed for real in
+// computeEquippedStatBonuses above — this is purely the display text.
+export function getDurabilityState(durability: number, type: 'Weapon' | 'Armor'): DurabilityState {
+  if (type === 'Armor') {
+    if (durability >= 3) return { label: 'Intact', effect: 'Full stats — normal soak and defense.' }
+    if (durability === 2) return { label: 'Damaged', effect: 'Soak reduced by 1.' }
+    if (durability === 1) return { label: 'Heavily Damaged', effect: 'Soak reduced by 2. Defense reduced by 1.' }
+    return { label: 'Broken', effect: 'Unusable. Provides no soak or defense.' }
+  }
+  if (durability >= 3) return { label: 'Intact', effect: 'Full stats — normal damage and qualities.' }
+  if (durability === 2) return { label: 'Damaged', effect: 'Add 1 setback to all attack rolls made with this weapon.' }
+  if (durability === 1) return { label: 'Heavily Damaged', effect: 'Upgrade the difficulty of all attack rolls once.' }
+  return { label: 'Broken', effect: 'Unusable. Cannot be used to attack.' }
 }
 
 export function computeCritTotal(criticalInjuries: CriticalInjuryEntry[]): number {

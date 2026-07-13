@@ -26,7 +26,7 @@ export default function StepCharacteristics({ draft, updateDraft, setCanProceed,
   const spent = totalSpentXP(
     draft.characteristics,
     draft.skills,
-    computeCareerSkills(draft.career, draft.talents, talentDocs),
+    computeCareerSkills(career?.chosenSkills.pool ?? [], draft.talents, talentDocs),
     draft.career.chosenSkills,
     draft.talents
   )

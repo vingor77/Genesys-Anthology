@@ -89,6 +89,9 @@ export interface ObjectDoc {
   // shouldn't show up for anyone else in the session.
   ownerId?: string
   price?: number
+  is_quest_item?: boolean
+  faction_exclusive?: string
+  is_crafting_material?: boolean
   slots?: string[]
   effect?: string
   situational?: { condition: string; effect: string }
@@ -97,6 +100,11 @@ export interface ObjectDoc {
   resultModifiers?: { type: string; amount: number; appliesTo: string; autoApply: boolean }[]
   durability?: number
   uses?: number
+  // Only meaningful alongside `uses`. Most consumables CAN be restored
+  // (a GM narratively refills a water bottle, etc.) — this flags the
+  // exception: something genuinely one-and-done with no path back, like
+  // a single-use flare. Undefined/false = restorable (the common case).
+  usesCannotRestore?: boolean
   repair_material?: string
   craft_skill?: 'Metalworking' | 'Leatherworking' | 'Crafting'
   damage?: number
@@ -156,6 +164,7 @@ export interface TalentEntry {
 export interface StatusEntry {
   id: string
   label: string
+  description?: string // narrative/rules text — always shown regardless of what mechanical fields are set
   sourceItemId?: string
   sourceTalentId?: string
   diceModifier?: {
@@ -170,12 +179,29 @@ export interface StatusEntry {
     woundThreshold?: number
     strainThreshold?: number
   }
+  // Temporary characteristic modifiers — distinct from XP-purchased
+  // characteristic increases. A status can push a characteristic below
+  // its normal starting-value floor (that floor only applies to
+  // permanent XP spend); this is a separate overlay computed on top of
+  // the base value, never written into characteristics itself.
+  characteristicModifiers?: {
+    brawn?: number
+    agility?: number
+    intellect?: number
+    cunning?: number
+    willpower?: number
+    presence?: number
+  }
   perTurnEffect?: { wounds?: number; strain?: number }
   remainingRounds?: number
   incomingDamageModifier?: { wounds?: number; strain?: number }
   blocksNaturalRecovery?: ('wounds' | 'strain')[]
   stacks?: number
   isCondition?: boolean
+  // When true, Remove requires an explicit second confirmation rather than
+  // removing immediately — prevents accidentally deleting something meant
+  // to last (a DM-imposed lasting condition, a permanent alteration tie-in, etc.)
+  permanent?: boolean
 }
 
 export type EquipmentSlotName =
@@ -183,15 +209,16 @@ export type EquipmentSlotName =
   | 'Ear' | 'Neck' | 'Wrist' | 'Left Ring' | 'Right Ring'
   | 'Main Hand' | 'Off Hand'
 
-// Slot name -> id of the inventory entry occupying it (references
-// character.inventory[] by objectId... actually by the inventory entry's
-// own identity — see InventoryEntry note). Null/absent means empty.
+// Slot name -> InventoryEntry.id of the item occupying it (NOT objectId —
+// see InventoryEntry.id's comment for why that distinction matters).
+// Null/absent means empty.
 export type EquippedSlots = Partial<Record<EquipmentSlotName, string | null>>
 
 // References the Object document for all static data (name, description,
 // damage, slots, effects). Only instance-specific mutable state lives
 // here — durability degradation, remaining uses, weapon cooldown.
 export interface InventoryEntry {
+  id: string // unique per owned instance — NOT the same as objectId, which repeats across duplicate copies of the same item. equippedSlots references this, not objectId, so two owned copies of the same item are always distinguishable.
   objectId: string // matches an ObjectDoc id
   statModifiers?: { stat: string; amount: number }[]
   poolModifiers?: { type: string; amount: number; appliesTo: string }[]
@@ -428,6 +455,18 @@ export async function fetchObjects(): Promise<ObjectDoc[]> {
   return objectsCache
 }
 
+// Firebase's client SDK has no way to read another user's live Auth
+// profile — that's Admin-SDK-only. This reads the Firestore users/{uid}
+// mirror instead, confirmed to use the auth uid directly as the document
+// id (not an auto-generated one) and confirmed to be actively kept
+// current on that field, unlike a membership doc's snapshot-at-join-time
+// copy. Used for showing a character's owner name to the DM.
+export async function fetchUserDisplayName(uid: string): Promise<string | null> {
+  const snap = await getDoc(doc(db, 'users', uid))
+  if (!snap.exists()) return null
+  return (snap.data().displayName as string | undefined) ?? null
+}
+
 export async function fetchObject(id: string): Promise<ObjectDoc | null> {
   const cached = objectCache.get(id)
   if (cached) return cached
@@ -463,18 +502,14 @@ export async function createCustomObject(
   sessionId: string,
   ownerId: string,
   ownerDisplayName: string,
-  data: { name: string; description: string }
+  data: Omit<ObjectDoc, 'id' | 'sessionId' | 'ownerId'>
 ): Promise<string> {
   const randomSuffix = Math.random().toString(36).slice(2, 6)
   const docId = `custom-${sessionId.slice(0, 8)}-${slugify(ownerDisplayName)}-${slugify(data.name)}-${randomSuffix}`
   const ref = doc(db, 'objects', docId)
   const object: ObjectDoc = {
+    ...data,
     id: docId,
-    name: data.name,
-    description: data.description,
-    type: 'Mundane',
-    rarity: 0,
-    encumbrance: 0,
     sessionId,
     ownerId,
   }

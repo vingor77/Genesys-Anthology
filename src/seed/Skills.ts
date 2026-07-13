@@ -21,7 +21,7 @@ export const SKILLS: SkillDoc[] = [
   { id: 'driving', name: 'Driving', characteristic: 'agility', description: 'Operating ground vehicles.' },
   { id: 'mechanics', name: 'Mechanics', characteristic: 'intellect', description: 'Building and repairing equipment.' },
   { id: 'medicine', name: 'Medicine', characteristic: 'intellect', description: 'Treating wounds and illness.' },
-  { id: 'operating', name: 'Operating', characteristic: 'intellect', description: 'Piloting large vehicles or ships.' },
+  { id: 'operating', name: 'Operating', characteristic: 'intellect', description: 'Using registers, computers, and other store systems.' },
   { id: 'perception', name: 'Perception', characteristic: 'cunning', description: 'Actively searching your surroundings.' },
   { id: 'piloting', name: 'Piloting', characteristic: 'agility', description: 'Flying small aircraft or spacecraft.' },
   { id: 'resilience', name: 'Resilience', characteristic: 'brawn', description: 'Enduring fatigue and hardship.' },

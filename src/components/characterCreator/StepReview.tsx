@@ -15,7 +15,7 @@ export default function StepReview({ draft, objectDocs, skillDocs, talentDocs }:
 
   const career = BBB_CAREERS.find((c) => c.name === draft.career.name)
 
-  const spent = totalSpentXP(draft.characteristics, draft.skills, computeCareerSkills(draft.career, draft.talents, talentDocs), draft.career.chosenSkills, draft.talents)
+  const spent = totalSpentXP(draft.characteristics, draft.skills, computeCareerSkills(career?.chosenSkills.pool ?? [], draft.talents, talentDocs), draft.career.chosenSkills, draft.talents)
   const available = draft.totalXP - spent
 
   const weapon = draft.weaponObjectId ? objectDocs.find((o) => o.id === draft.weaponObjectId) : null
@@ -46,15 +46,22 @@ export default function StepReview({ draft, objectDocs, skillDocs, talentDocs }:
   // Turns the one-time chargen picks into the real, mutable inventory the
   // sheet will edit during play. Items reference Objects by id now — no
   // custom naming or baked-in qualities to materialize, since the picked
-  // items are already fully defined.
+  // items are already fully defined. weaponEntryId/armorEntryId are
+  // generated here (not inside materializeInventory) so handleCreate can
+  // also use them to build equippedSlots correctly — equippedSlots
+  // references InventoryEntry.id, never objectId, since two owned copies
+  // of the same item must stay distinguishable.
+  const weaponEntryId = crypto.randomUUID()
+  const armorEntryId = crypto.randomUUID()
+
   async function materializeInventory(): Promise<InventoryEntry[]> {
     const entries: InventoryEntry[] = []
-    if (draft.weaponObjectId) entries.push({ objectId: draft.weaponObjectId })
-    if (draft.armorObjectId) entries.push({ objectId: draft.armorObjectId, currentDurability: 3 })
-    entries.push({ objectId: BBB_UNIVERSAL_GEAR_ID })
+    if (draft.weaponObjectId) entries.push({ id: weaponEntryId, objectId: draft.weaponObjectId })
+    if (draft.armorObjectId) entries.push({ id: armorEntryId, objectId: draft.armorObjectId, currentDurability: 3 })
+    entries.push({ id: crypto.randomUUID(), objectId: BBB_UNIVERSAL_GEAR_ID })
     for (const gearId of draft.gearObjectIds) {
       const doc = objectDocs.find((o) => o.id === gearId)
-      entries.push(doc?.uses !== undefined ? { objectId: gearId, currentUses: doc.uses } : { objectId: gearId })
+      entries.push(doc?.uses !== undefined ? { id: crypto.randomUUID(), objectId: gearId, currentUses: doc.uses } : { id: crypto.randomUUID(), objectId: gearId })
     }
     // Custom items are only actually written to Firestore here, at the
     // moment the character is genuinely being created — not when the
@@ -64,8 +71,14 @@ export default function StepReview({ draft, objectDocs, skillDocs, talentDocs }:
     if (draft.customItems.length > 0 && sessionId && user) {
       const ownerDisplayName = user.displayName ?? user.email ?? 'player'
       for (const item of draft.customItems) {
-        const id = await createCustomObject(sessionId, user.uid, ownerDisplayName, item)
-        entries.push({ objectId: id })
+        const id = await createCustomObject(sessionId, user.uid, ownerDisplayName, {
+          name: item.name,
+          description: item.description,
+          type: 'Mundane',
+          rarity: 0,
+          encumbrance: 0,
+        })
+        entries.push({ id: crypto.randomUUID(), objectId: id })
       }
     }
     return entries
@@ -78,8 +91,8 @@ export default function StepReview({ draft, objectDocs, skillDocs, talentDocs }:
     try {
       const inventory = await materializeInventory()
       const equippedSlots: Record<string, string> = {}
-      if (draft.weaponObjectId) equippedSlots['Main Hand'] = draft.weaponObjectId
-      if (draft.armorObjectId) equippedSlots['Chest'] = draft.armorObjectId
+      if (draft.weaponObjectId) equippedSlots['Main Hand'] = weaponEntryId
+      if (draft.armorObjectId) equippedSlots['Chest'] = armorEntryId
 
       await createCharacter(user.uid, {
         sessionId,
@@ -95,7 +108,7 @@ export default function StepReview({ draft, objectDocs, skillDocs, talentDocs }:
         equippedSlots,
         inventory,
         criticalInjuries: [],
-        description: {},
+        description: draft.description,
         currency: { amount: 0, label: CURRENCY_LABEL },
         notes: draft.identityNotes.filter((n) => n.trim().length > 0).join('\n'),
         totalXP: draft.totalXP,
@@ -259,6 +272,19 @@ export default function StepReview({ draft, objectDocs, skillDocs, talentDocs }:
           <p className="text-sm text-fg-secondary"><span className="text-fg">Desire:</span> {draft.desire}</p>
           <p className="text-sm text-fg-secondary"><span className="text-fg">Fear:</span> {draft.fear}</p>
         </div>
+
+        {Object.values(draft.description).some((v) => v && v.trim().length > 0) && (
+          <div className="rounded-lg border border-border bg-surface p-4">
+            <h3 className="mb-2 text-sm font-semibold text-fg">Appearance</h3>
+            {draft.description.gender && <p className="text-sm text-fg-secondary"><span className="text-fg">Gender:</span> {draft.description.gender}</p>}
+            {draft.description.age && <p className="text-sm text-fg-secondary"><span className="text-fg">Age:</span> {draft.description.age}</p>}
+            {draft.description.height && <p className="text-sm text-fg-secondary"><span className="text-fg">Height:</span> {draft.description.height}</p>}
+            {draft.description.build && <p className="text-sm text-fg-secondary"><span className="text-fg">Build:</span> {draft.description.build}</p>}
+            {draft.description.hair && <p className="text-sm text-fg-secondary"><span className="text-fg">Hair:</span> {draft.description.hair}</p>}
+            {draft.description.eyes && <p className="text-sm text-fg-secondary"><span className="text-fg">Eyes:</span> {draft.description.eyes}</p>}
+            {draft.description.notable && <p className="text-sm text-fg-secondary"><span className="text-fg">Notable:</span> {draft.description.notable}</p>}
+          </div>
+        )}
 
         <div className="rounded-lg border border-border bg-surface p-4">
           <p className="text-sm text-fg-secondary">

@@ -18,7 +18,7 @@ export default function StepSkills({ draft, updateDraft, setCanProceed, maxSkill
   }, [setCanProceed])
 
   const career = BBB_CAREERS.find((c) => c.name === draft.career.name)
-  const careerSkillNames = computeCareerSkills(draft.career, draft.talents, talentDocs)
+  const careerSkillNames = computeCareerSkills(career?.chosenSkills.pool ?? [], draft.talents, talentDocs)
 
   const spent = totalSpentXP(
     draft.characteristics,

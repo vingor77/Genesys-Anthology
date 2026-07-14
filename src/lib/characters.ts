@@ -93,6 +93,14 @@ export interface ObjectDoc {
   faction_exclusive?: string
   is_crafting_material?: boolean
   slots?: string[]
+  // Only meaningful when slots.length > 1. 'all' = a genuinely two-handed
+  // item — equipping it fills every listed slot at once, unequipping
+  // anything already there. 'any' = a one-handed item that happens to fit
+  // more than one slot (e.g. either hand) — equipping it occupies exactly
+  // one of the listed slots, chosen at equip time. Irrelevant/omitted for
+  // single-slot items. Undefined with 2+ slots is treated as 'any' — the
+  // safer default, since it never silently displaces more than one item.
+  slotMode?: 'all' | 'any'
   effect?: string
   situational?: { condition: string; effect: string }
   statModifiers?: { stat: string; amount: number; autoApply: boolean }[]
@@ -232,6 +240,13 @@ export interface InventoryEntry {
   // Not the same concept as currentDurability — binary and permanent,
   // no partial state, no repair path.
   destroyed?: boolean
+  // Manual on/off for this item's ObjectDoc.statModifiers entries whose
+  // own `autoApply` is false/undefined — those never apply on their own,
+  // the player has to explicitly turn them on with the sheet's Apply
+  // button. autoApply:true modifiers ignore this entirely and always
+  // apply. Undefined defaults to not-applied (false), same as every
+  // existing entry that predates this field.
+  applied?: boolean
 }
 
 export interface CriticalInjuryEntry {
@@ -346,6 +361,7 @@ export async function createCharacter(
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   })
+  localStorage.setItem("tempCharID", ref.id);
   return ref.id
 }
 
@@ -443,16 +459,20 @@ export async function fetchCriticalInjuries(): Promise<CriticalInjuryDoc[]> {
   return criticalInjuriesCache
 }
 
-// Fetches the global object catalog (items with no sessionId). Once the
-// custom-item upload feature exists, this becomes the place to also merge
-// in session-scoped items — but that's a fast-follow, not needed yet.
-export async function fetchObjects(): Promise<ObjectDoc[]> {
-  if (objectsCache) return objectsCache
-  const snap = await getDocs(collection(db, 'objects'))
-  objectsCache = snap.docs
-    .map((d) => ({ id: d.id, ...d.data() } as ObjectDoc))
-    .filter((o) => !o.sessionId)
-  return objectsCache
+// Fetches the full object catalog (global items plus any session-scoped
+// custom items belonging to the given session) — previously this
+// unconditionally dropped every item with a sessionId, which meant a
+// custom item became permanently invisible outside the exact moment it
+// was created (any refetch, any other viewer, even the same character
+// reloading the sheet). The raw list is cached once and filtered per
+// call instead, so switching sessions or omitting sessionId entirely
+// (global-only) doesn't require a second network round trip.
+export async function fetchObjects(sessionId?: string): Promise<ObjectDoc[]> {
+  if (!objectsCache) {
+    const snap = await getDocs(collection(db, 'objects'))
+    objectsCache = snap.docs.map((d) => ({ id: d.id, ...d.data() } as ObjectDoc))
+  }
+  return objectsCache!.filter((o) => !o.sessionId || o.sessionId === sessionId)
 }
 
 // Firebase's client SDK has no way to read another user's live Auth
@@ -514,5 +534,10 @@ export async function createCustomObject(
     ownerId,
   }
   await setDoc(ref, object)
+  // Keep the module-level cache in sync — without this, fetchObjects()
+  // anywhere else in the app (a different mount, a different character's
+  // sheet in the same tab) wouldn't see this item until objectsCache gets
+  // cleared, since it's only ever populated once from Firestore.
+  if (objectsCache) objectsCache.push(object)
   return docId
 }

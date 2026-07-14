@@ -1,7 +1,6 @@
 import type {
   SkillEntry,
   TalentEntry,
-  SkillDoc,
   TalentDoc,
   QualityDoc,
   ObjectDoc,
@@ -18,6 +17,31 @@ export interface Characteristics {
   cunning: number
   willpower: number
   presence: number
+}
+
+// Shared display labels for the 5 DerivedStatBonuses keys and the 6
+// characteristics — lives here rather than on CharacterSheet.tsx because
+// CustomItemForm.tsx also needs them, and CharacterSheet.tsx imports
+// CustomItemForm.tsx. Defining them on the component that gets imported
+// FROM creates a circular import — the child needs the constant before
+// the parent module has finished initializing it ("Cannot access before
+// initialization"). genesysCalc.ts has no dependency on either
+// component, so both can import from here with no cycle.
+export const STAT_LABELS: Record<string, string> = {
+  soak: 'Soak',
+  meleeDefense: 'Melee Defense',
+  rangedDefense: 'Ranged Defense',
+  woundThreshold: 'Wound Threshold',
+  strainThreshold: 'Strain Threshold',
+}
+
+export const CHARACTERISTIC_LABELS: Record<string, string> = {
+  brawn: 'Brawn',
+  agility: 'Agility',
+  intellect: 'Intellect',
+  cunning: 'Cunning',
+  willpower: 'Willpower',
+  presence: 'Presence',
 }
 
 export function characteristicCost(rank: number, base = 2): number {
@@ -163,7 +187,15 @@ export function computeStatusBonuses(status: StatusEntry[]): Required<DerivedSta
 // (not the XP-spend floor of BBB_STARTING_CHARACTERISTIC, which only
 // applies to voluntarily lowering a purchased increase — a status can
 // genuinely push a character below their starting value).
-export function computeEffectiveCharacteristics(base: Characteristics, status: StatusEntry[]): Characteristics {
+// inventoryBonuses is the same kind of overlay, sourced from
+// computeInventoryCharacteristicBonuses below instead of Status — an
+// item modifier targeting a characteristic (a ring of +1 Agility, say)
+// applies through this exact same pipeline rather than a separate one.
+export function computeEffectiveCharacteristics(
+  base: Characteristics,
+  status: StatusEntry[],
+  inventoryBonuses: Partial<Characteristics> = {}
+): Characteristics {
   const effective = { ...base }
   for (const s of status) {
     if (!s.characteristicModifiers) continue
@@ -171,6 +203,11 @@ export function computeEffectiveCharacteristics(base: Characteristics, status: S
       if (amount !== undefined) {
         effective[key] = Math.min(6, Math.max(1, effective[key] + amount))
       }
+    }
+  }
+  for (const [key, amount] of Object.entries(inventoryBonuses) as [keyof Characteristics, number | undefined][]) {
+    if (amount !== undefined) {
+      effective[key] = Math.min(6, Math.max(1, effective[key] + amount))
     }
   }
   return effective
@@ -304,6 +341,86 @@ export function computeEquippedStatBonuses(
           totals[mod.stat as keyof typeof totals] += mod.amount * rank
         }
       }
+    }
+  }
+  return totals
+}
+
+// Sums ObjectDoc.statModifiers across the whole inventory — separate
+// from computeEquippedStatBonuses above, which only reads armor's own
+// soak/defense fields and quality-derived modifiers on equipped items.
+// This is the generic item-level field instead: a modifier applies
+// automatically (regardless of equip state) if its own `autoApply` is
+// true; otherwise it only counts once the player has flipped that
+// instance's `applied` flag on via the sheet's Apply button. A broken
+// (durability 0) or destroyed (Fragile, one-and-done) item contributes
+// nothing either way — matches the same "unusable item grants nothing"
+// rule equipped gear already follows, just applied here to inventory
+// items generally rather than only equipped weapons/armor.
+//
+// The shared schema's stat enum also lists `wounds`/`strain` as valid
+// targets alongside `woundThreshold`/`strainThreshold` — for a standing
+// item modifier those only make sense as a max/threshold change (an
+// always-on "subtract 2 from current wounds" isn't a real effect; an
+// instant heal/damage tick is a `Use`-triggered thing, handled
+// elsewhere, not a passive bonus). So `wounds`/`strain` alias directly
+// into the threshold buckets here. The custom item form only ever
+// offers "Wound Threshold"/"Strain Threshold" as the pick, but this
+// alias stays as a defensive fallback for the raw enum value.
+const ITEM_STAT_ALIASES: Record<string, keyof DerivedStatBonuses> = {
+  wounds: 'woundThreshold',
+  strain: 'strainThreshold',
+}
+
+export function computeInventoryStatBonuses(
+  inventory: InventoryEntry[],
+  objectDocs: Map<string, ObjectDoc>
+): Required<DerivedStatBonuses> {
+  const totals = { soak: 0, meleeDefense: 0, rangedDefense: 0, woundThreshold: 0, strainThreshold: 0 }
+  for (const entry of inventory) {
+    if (entry.destroyed) continue
+    const doc = objectDocs.get(entry.objectId)
+    if (!doc?.statModifiers) continue
+    if (doc.durability !== undefined && (entry.currentDurability ?? doc.durability) === 0) continue
+
+    for (const mod of doc.statModifiers) {
+      const isActive = mod.autoApply || !!entry.applied
+      if (!isActive) continue
+      const key = ITEM_STAT_ALIASES[mod.stat] ?? mod.stat
+      if (key in totals) {
+        totals[key as keyof typeof totals] += mod.amount
+      }
+    }
+  }
+  return totals
+}
+
+const CHARACTERISTIC_KEYS = ['brawn', 'agility', 'intellect', 'cunning', 'willpower', 'presence'] as const
+
+// Companion to computeInventoryStatBonuses above, split out because
+// characteristic overlays go through computeEffectiveCharacteristics's
+// own pipeline (same one Status uses), not the soak/defense/threshold
+// totals dict — the two are structurally different shapes
+// (Required<DerivedStatBonuses> vs Partial<Characteristics>), so one
+// function returning a single merged blob would just mean the caller
+// has to split it back apart anyway.
+export function computeInventoryCharacteristicBonuses(
+  inventory: InventoryEntry[],
+  objectDocs: Map<string, ObjectDoc>
+): Partial<Characteristics> {
+  const totals: Partial<Characteristics> = {}
+  for (const entry of inventory) {
+    if (entry.destroyed) continue
+    const doc = objectDocs.get(entry.objectId)
+    if (!doc?.statModifiers) continue
+    if (doc.durability !== undefined && (entry.currentDurability ?? doc.durability) === 0) continue
+
+    for (const mod of doc.statModifiers) {
+      if (!(CHARACTERISTIC_KEYS as readonly string[]).includes(mod.stat)) continue
+      const isActive = mod.autoApply || !!entry.applied
+      if (!isActive) continue
+      const key = mod.stat as keyof Characteristics
+      totals[key] = (totals[key] ?? 0) + mod.amount
     }
   }
   return totals

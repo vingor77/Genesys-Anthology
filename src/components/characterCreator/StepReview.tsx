@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
 import { BBB_CAREERS, BBB_UNIVERSAL_GEAR_ID, BBB_SPECIES, CURRENCY_LABEL } from '../../lib/gameConfigs/bbb'
 import { totalSpentXP, derivedStats, computeTalentBonuses, computeCareerSkills } from '../../lib/genesysCalc'
-import { createCharacter, createCustomObject, type InventoryEntry } from '../../lib/characters'
+import { createCharacter, createCustomObject, type InventoryEntry, type ObjectDoc } from '../../lib/characters'
 import type { StepProps } from '../../pages/CreateCharacter'
 
 export default function StepReview({ draft, objectDocs, skillDocs, talentDocs }: StepProps) {
@@ -54,14 +54,27 @@ export default function StepReview({ draft, objectDocs, skillDocs, talentDocs }:
   const weaponEntryId = crypto.randomUUID()
   const armorEntryId = crypto.randomUUID()
 
+  // Mirrors CharacterSheet.tsx's addItem() exactly — currentDurability/
+  // currentUses always derive from the item's own doc fields, never
+  // hardcoded or left unset. Previously armor hardcoded `currentDurability: 3`
+  // and weapon set neither field at all, which meant a starting weapon's
+  // Damage button never appeared (gated on currentDurability !== undefined) —
+  // Equip still worked since that only checks `=== 0`, so it looked like
+  // everything but Damage was fine, which is exactly what was happening.
+  function makeEntry(objectId: string, doc: ObjectDoc | null | undefined, entryId?: string): InventoryEntry {
+    const entry: InventoryEntry = { id: entryId ?? crypto.randomUUID(), objectId }
+    if (doc?.durability !== undefined) entry.currentDurability = doc.durability
+    if (doc?.uses !== undefined) entry.currentUses = doc.uses
+    return entry
+  }
+
   async function materializeInventory(): Promise<InventoryEntry[]> {
     const entries: InventoryEntry[] = []
-    if (draft.weaponObjectId) entries.push({ id: weaponEntryId, objectId: draft.weaponObjectId })
-    if (draft.armorObjectId) entries.push({ id: armorEntryId, objectId: draft.armorObjectId, currentDurability: 3 })
-    entries.push({ id: crypto.randomUUID(), objectId: BBB_UNIVERSAL_GEAR_ID })
+    if (draft.weaponObjectId) entries.push(makeEntry(draft.weaponObjectId, weapon, weaponEntryId))
+    if (draft.armorObjectId) entries.push(makeEntry(draft.armorObjectId, armor, armorEntryId))
+    entries.push(makeEntry(BBB_UNIVERSAL_GEAR_ID, universal))
     for (const gearId of draft.gearObjectIds) {
-      const doc = objectDocs.find((o) => o.id === gearId)
-      entries.push(doc?.uses !== undefined ? { id: crypto.randomUUID(), objectId: gearId, currentUses: doc.uses } : { id: crypto.randomUUID(), objectId: gearId })
+      entries.push(makeEntry(gearId, objectDocs.find((o) => o.id === gearId)))
     }
     // Custom items are only actually written to Firestore here, at the
     // moment the character is genuinely being created — not when the
@@ -71,13 +84,11 @@ export default function StepReview({ draft, objectDocs, skillDocs, talentDocs }:
     if (draft.customItems.length > 0 && sessionId && user) {
       const ownerDisplayName = user.displayName ?? user.email ?? 'player'
       for (const item of draft.customItems) {
-        const id = await createCustomObject(sessionId, user.uid, ownerDisplayName, {
-          name: item.name,
-          description: item.description,
-          type: 'Mundane',
-          rarity: 0,
-          encumbrance: 0,
-        })
+        // draft.customItems is already typed as
+        // Omit<ObjectDoc, 'id' | 'sessionId' | 'ownerId'> — exactly what
+        // createCustomObject wants — so the whole staged payload from
+        // CustomItemForm passes through untouched, not just name/description.
+        const id = await createCustomObject(sessionId, user.uid, ownerDisplayName, item)
         entries.push({ id: crypto.randomUUID(), objectId: id })
       }
     }

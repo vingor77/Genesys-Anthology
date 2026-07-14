@@ -109,6 +109,13 @@ export default function SessionPage() {
       >
         Create a character
       </Link>
+      <div></div>
+      <Link
+        to={`/characters/${localStorage.getItem("tempCharID")}`}
+        className="mt-4 inline-block rounded bg-accent px-4 py-2 text-sm font-medium text-accent-fg hover:bg-accent-hover"
+      >
+        Access Character (Temporary Button)
+      </Link>
     </div>
   )
 }

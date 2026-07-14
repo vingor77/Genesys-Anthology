@@ -188,4 +188,11 @@ export const VISIBLE_ITEM_FIELDS = {
   suppressEffect: false,
   protectionType: false,
   curesSickness: false,
+  recoveryRollModifier: false, // pairs with curesSickness — was missing its own gate before
+  // Not a "this game doesn't use it" gate like the rest above — these two
+  // stay false everywhere, any game, until an actual dice roller exists
+  // to consume them. Reusing the same flag mechanism rather than building
+  // a second system for "not implemented yet" vs "not used by this game."
+  poolModifiers: false,
+  resultModifiers: false,
 }

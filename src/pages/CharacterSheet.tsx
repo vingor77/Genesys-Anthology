@@ -17,11 +17,14 @@ import {
   type QualityDoc,
   type ObjectDoc,
   type CriticalInjuryDoc,
+  type EquippedSlots,
 } from '../lib/characters'
 import {
   derivedStats,
   computeTalentBonuses,
   computeEquippedStatBonuses,
+  computeInventoryStatBonuses,
+  computeInventoryCharacteristicBonuses,
   computeCareerSkills,
   computeEncumbrance,
   encumbranceCapacity,
@@ -33,6 +36,8 @@ import {
   computeStatusBonuses,
   computeEffectiveCharacteristics,
   computeCritTotal,
+  STAT_LABELS,
+  CHARACTERISTIC_LABELS,
   type Characteristics,
 } from '../lib/genesysCalc'
 import {
@@ -50,7 +55,8 @@ import {
 } from '../lib/gameConfigs/bbb'
 import { DicePool, DifficultyDie } from '../icons/DiceIcons'
 import StepTalents from '../components/characterCreator/StepTalents'
-import type { TalentEntry, InventoryEntry, StatusEntry, CriticalInjuryEntry } from '../lib/characters'
+import CustomItemForm from '../components/sheet/CustomItemForm'
+import type { InventoryEntry, StatusEntry, CriticalInjuryEntry } from '../lib/characters'
 
 // Genesys standard living-character skill cap — distinct from chargen's
 // lower cap (2), which only applied during the wizard.
@@ -116,23 +122,6 @@ const DICE_MODIFIER_LABELS: Record<string, string> = {
   addSetback: 'Add Setback',
   upgradeDifficulty: 'Upgrade Difficulty',
   downgradeDifficulty: 'Downgrade Difficulty',
-}
-
-const STAT_LABELS: Record<string, string> = {
-  soak: 'Soak',
-  meleeDefense: 'Melee Defense',
-  rangedDefense: 'Ranged Defense',
-  woundThreshold: 'Wound Threshold',
-  strainThreshold: 'Strain Threshold',
-}
-
-const CHARACTERISTIC_LABELS: Record<string, string> = {
-  brawn: 'Brawn',
-  agility: 'Agility',
-  intellect: 'Intellect',
-  cunning: 'Cunning',
-  willpower: 'Willpower',
-  presence: 'Presence',
 }
 
 function blankStatusForm(): Omit<StatusEntry, 'id'> {
@@ -260,6 +249,9 @@ function ItemDetail({
   if (VISIBLE_ITEM_FIELDS.curesSickness && doc.cures_sickness && doc.cures_sickness.length > 0) {
     secondary.push({ label: 'Cures', value: doc.cures_sickness.join(', ') })
   }
+  if (VISIBLE_ITEM_FIELDS.recoveryRollModifier && doc.recovery_roll_modifier !== undefined) {
+    secondary.push({ label: 'Recovery roll modifier', value: String(doc.recovery_roll_modifier) })
+  }
   if (VISIBLE_ITEM_FIELDS.suppressEffect && doc.suppress_effect) {
     secondary.push({ label: 'Suppresses', value: doc.suppress_effect })
   }
@@ -329,6 +321,12 @@ function ItemDetail({
         </div>
       )}
 
+      {durabilityState && durabilityState.label !== 'Intact' && (
+        <p className="mt-2 text-xs" style={{ color: durabilityColor }}>
+          {durabilityState.effect}
+        </p>
+      )}
+
       {secondary.length > 0 && (
         <p className="mt-2 text-xs text-fg-muted">
           {secondary.map((s, i) => (
@@ -344,7 +342,21 @@ function ItemDetail({
         <div className="mt-3">
           <p className="text-xs font-semibold uppercase tracking-wide text-fg-muted">Stat Modifiers</p>
           <p className="text-sm text-fg">
-            {doc.statModifiers.map((m, i) => `${i > 0 ? ', ' : ''}${m.stat} ${m.amount > 0 ? '+' : ''}${m.amount}`)}
+            {doc.statModifiers.map((m, i) => (
+              <span key={i}>
+                {i > 0 && ', '}
+                {STAT_LABELS[m.stat] ?? CHARACTERISTIC_LABELS[m.stat] ?? m.stat} {m.amount > 0 ? '+' : ''}
+                {m.amount}
+                {m.autoApply ? (
+                  <span className="text-xs text-fg-muted"> (auto)</span>
+                ) : (
+                  <span className={`text-xs ${entry?.applied ? 'text-accent' : 'text-fg-muted'}`}>
+                    {' '}
+                    ({entry?.applied ? 'applied' : 'not applied'})
+                  </span>
+                )}
+              </span>
+            ))}
           </p>
         </div>
       )}
@@ -420,6 +432,16 @@ export default function CharacterSheet() {
   const [showTalentModal, setShowTalentModal] = useState(false)
   const [viewingOwnedTalentId, setViewingOwnedTalentId] = useState<string | null>(null)
   const [viewingInventoryIndex, setViewingInventoryIndex] = useState<number | null>(null)
+  // slotMode 'any' with 2+ eligible slots — asks which one, no confirmation
+  // needed since replacing a single occupied slot has always been silent.
+  const [equipChoice, setEquipChoice] = useState<{ entry: InventoryEntry; slots: string[] } | null>(null)
+  // slotMode 'all' — only populated when equipping would actually displace
+  // something; if nothing's in the way, equip happens immediately with no prompt.
+  const [equipConfirm, setEquipConfirm] = useState<{
+    entry: InventoryEntry
+    slots: string[]
+    displaced: { slot: string; name: string }[]
+  } | null>(null)
   const [showAddCritModal, setShowAddCritModal] = useState(false)
   const [critModifierInput, setCritModifierInput] = useState('')
   const [critRollResult, setCritRollResult] = useState<CritRollResult | null>(null)
@@ -435,39 +457,6 @@ export default function CharacterSheet() {
   const [showAddItemFilters, setShowAddItemFilters] = useState(false)
   const [viewingAddItemId, setViewingAddItemId] = useState<string | null>(null)
   const [showCustomItemForm, setShowCustomItemForm] = useState(false)
-  const [customItemForm, setCustomItemForm] = useState({
-    name: '',
-    description: '',
-    type: 'Mundane' as ObjectDoc['type'],
-    rarity: 0,
-    encumbrance: 0,
-    // Weapon
-    damage: 0,
-    damageType: 'Brawn-based' as 'Brawn-based' | 'Fixed',
-    crit: 0,
-    range: 'Engaged' as NonNullable<ObjectDoc['range']>,
-    skill: '',
-    qualityNames: [] as string[],
-    // Armor
-    soak: 0,
-    meleeDefense: 0,
-    rangedDefense: 0,
-    // Food/Drink
-    hungerStacksRemoved: 0,
-    thirstStacksRemoved: 0,
-    bonusEffects: '',
-    // Light Source
-    lightStepBoost: 0,
-    lightCap: '',
-    duration: 0,
-    fuelType: 'Batteries' as NonNullable<ObjectDoc['fuel_type']>,
-    // Tool/Mundane
-    effect: '',
-    // Shared
-    durability: undefined as number | undefined,
-    uses: undefined as number | undefined,
-    usesCannotRestore: false,
-  })
 
   useEffect(() => {
     if (!characterId) return
@@ -483,9 +472,18 @@ export default function CharacterSheet() {
     fetchSkills().then(setSkillDocs)
     fetchTalents().then(setTalentDocs)
     fetchQualities().then(setQualityDocs)
-    fetchObjects().then(setObjectDocs)
     fetchCriticalInjuries().then(setCriticalInjuryDocs)
   }, [])
+
+  // Deliberately separate from the effect above — this one needs
+  // character.sessionId, which isn't known until the character has
+  // loaded. Re-running when sessionId changes also means the session's
+  // custom items are picked up if this component ever mounts before the
+  // character document arrives.
+  useEffect(() => {
+    if (!character) return
+    fetchObjects(character.sessionId).then(setObjectDocs)
+  }, [character?.sessionId])
 
   if (character === undefined) {
     return <p className="text-fg-secondary">Loading character…</p>
@@ -506,14 +504,24 @@ export default function CharacterSheet() {
 
   const talentBonuses = computeTalentBonuses(character.talents, talentDocs)
   const equippedBonuses = computeEquippedStatBonuses(character.equippedSlots, character.inventory, objectMap, qualityDocs)
+  const inventoryBonuses = computeInventoryStatBonuses(character.inventory, objectMap)
+  const inventoryCharacteristicBonuses = computeInventoryCharacteristicBonuses(character.inventory, objectMap)
   const statusBonuses = computeStatusBonuses(character.status)
-  const effectiveCharacteristics = computeEffectiveCharacteristics(character.characteristics, character.status)
+  const effectiveCharacteristics = computeEffectiveCharacteristics(
+    character.characteristics,
+    character.status,
+    inventoryCharacteristicBonuses
+  )
   const stats = derivedStats(effectiveCharacteristics, {
-    soak: talentBonuses.soak + equippedBonuses.soak + statusBonuses.soak,
-    meleeDefense: talentBonuses.meleeDefense + equippedBonuses.meleeDefense + statusBonuses.meleeDefense,
-    rangedDefense: talentBonuses.rangedDefense + equippedBonuses.rangedDefense + statusBonuses.rangedDefense,
-    woundThreshold: talentBonuses.woundThreshold + equippedBonuses.woundThreshold + statusBonuses.woundThreshold,
-    strainThreshold: talentBonuses.strainThreshold + equippedBonuses.strainThreshold + statusBonuses.strainThreshold,
+    soak: talentBonuses.soak + equippedBonuses.soak + inventoryBonuses.soak + statusBonuses.soak,
+    meleeDefense:
+      talentBonuses.meleeDefense + equippedBonuses.meleeDefense + inventoryBonuses.meleeDefense + statusBonuses.meleeDefense,
+    rangedDefense:
+      talentBonuses.rangedDefense + equippedBonuses.rangedDefense + inventoryBonuses.rangedDefense + statusBonuses.rangedDefense,
+    woundThreshold:
+      talentBonuses.woundThreshold + equippedBonuses.woundThreshold + inventoryBonuses.woundThreshold + statusBonuses.woundThreshold,
+    strainThreshold:
+      talentBonuses.strainThreshold + equippedBonuses.strainThreshold + inventoryBonuses.strainThreshold + statusBonuses.strainThreshold,
   })
 
   const careerSkillNames = computeCareerSkills(career?.chosenSkills.pool ?? [], character.talents, talentDocs)
@@ -568,14 +576,68 @@ export default function CharacterSheet() {
     update({ characteristics: { ...character!.characteristics, [key]: next } })
   }
 
-  // First active slot the item's own `slots` field matches — BB&B only
-  // has 3, so there's never real ambiguity here; a fuller game would need
-  // real slot-choice UI once an item can fit more than one active slot.
+  // Figures out what's currently occupying a set of target slots, keyed
+  // by entry id so a two-handed item spanning two of those slots only
+  // gets listed once rather than appearing as two separate displacements.
+  function getDisplacedItems(slots: string[], excludeEntryId: string): { slot: string; name: string }[] {
+    const seen = new Set<string>()
+    const result: { slot: string; name: string }[] = []
+    for (const slot of slots) {
+      const occupantId = character!.equippedSlots[slot as keyof EquippedSlots]
+      if (!occupantId || occupantId === excludeEntryId || seen.has(occupantId)) continue
+      seen.add(occupantId)
+      const occupantEntry = character!.inventory.find((e) => e.id === occupantId)
+      const occupantDoc = occupantEntry ? objectMap.get(occupantEntry.objectId) : undefined
+      result.push({ slot, name: occupantDoc?.name ?? 'Unknown item' })
+    }
+    return result
+  }
+
+  // The actual write, once we know exactly which slot(s) to fill and that
+  // any confirmation needed has already happened. Clears every slot any
+  // displaced entry occupies (not just the one being overwritten) — using
+  // unequipItem's own logic inline, so a two-handed item being bumped out
+  // never ends up half-equipped in whichever slot wasn't touched directly.
+  function performEquip(entry: InventoryEntry, slots: string[]) {
+    const newSlots = { ...character!.equippedSlots }
+    for (const slot of slots) {
+      const occupantId = newSlots[slot as keyof EquippedSlots]
+      if (occupantId && occupantId !== entry.id) {
+        for (const s of Object.keys(newSlots)) {
+          if (newSlots[s as keyof EquippedSlots] === occupantId) newSlots[s as keyof EquippedSlots] = null
+        }
+      }
+    }
+    for (const slot of slots) {
+      newSlots[slot as keyof EquippedSlots] = entry.id
+    }
+    update({ equippedSlots: newSlots })
+  }
+
   function equipItem(entry: InventoryEntry) {
     const doc = objectMap.get(entry.objectId)
-    const targetSlot = doc?.slots?.find((s) => (GAME_CONFIG.activeSlots as readonly string[]).includes(s))
-    if (!targetSlot) return
-    update({ equippedSlots: { ...character!.equippedSlots, [targetSlot]: entry.id } })
+    const eligibleSlots = (doc?.slots ?? []).filter((s) => (GAME_CONFIG.activeSlots as readonly string[]).includes(s))
+    if (eligibleSlots.length === 0) return
+
+    // Single eligible slot — no ambiguity, no choice, no confirmation.
+    // Matches the behavior this always had before slotMode existed.
+    if (eligibleSlots.length === 1) {
+      performEquip(entry, eligibleSlots)
+      return
+    }
+
+    if (doc?.slotMode === 'all') {
+      const displaced = getDisplacedItems(eligibleSlots, entry.id)
+      if (displaced.length > 0) {
+        setEquipConfirm({ entry, slots: eligibleSlots, displaced })
+      } else {
+        performEquip(entry, eligibleSlots)
+      }
+      return
+    }
+
+    // 'any' (including undefined — the safer default for 2+ slots)
+    setEquipChoice({ entry, slots: eligibleSlots })
   }
 
   function unequipItem(entryId: string) {
@@ -635,6 +697,15 @@ export default function CharacterSheet() {
       if (e.currentUses !== undefined) return { ...e, currentUses: Math.max(0, e.currentUses - 1) }
       return e
     })
+    update({ inventory: newInventory })
+  }
+
+  // Manual counterpart to autoApply — flips whether this specific
+  // instance's non-autoApply statModifiers count toward derived stats.
+  // computeInventoryStatBonuses reads this flag directly; toggling it is
+  // the entire effect, nothing else to update here.
+  function toggleApplied(index: number) {
+    const newInventory = character!.inventory.map((e, i) => (i === index ? { ...e, applied: !e.applied } : e))
     update({ inventory: newInventory })
   }
 
@@ -786,63 +857,28 @@ export default function CharacterSheet() {
     setViewingCritIndex(null)
   }
 
-  async function handleCreateCustomItem() {
-    if (!character!.sessionId || !user || !customItemForm.name.trim()) return
+  // Payload construction now lives entirely in CustomItemForm — this just
+  // does the part that's actually tied to character/session state: the
+  // Firestore write, appending to local objectDocs, adding the new item
+  // to inventory, and closing the modal.
+  async function handleCreateCustomItem(payload: Omit<ObjectDoc, 'id' | 'sessionId' | 'ownerId'>) {
+    if (!character!.sessionId || !user) return
     const ownerDisplayName = user.displayName ?? user.email ?? 'player'
-    const f = customItemForm
-
-    const payload: Omit<ObjectDoc, 'id' | 'sessionId' | 'ownerId'> = {
-      name: f.name.trim(),
-      description: f.description.trim(),
-      type: f.type,
-      rarity: f.rarity,
-      encumbrance: f.encumbrance,
-    }
-    if (f.durability !== undefined) payload.durability = f.durability
-    if (f.uses !== undefined) {
-      payload.uses = f.uses
-      if (f.usesCannotRestore) payload.usesCannotRestore = true
-    }
-    if (f.type === 'Weapon') {
-      payload.damage = f.damage
-      payload.damageType = f.damageType
-      payload.crit = f.crit
-      payload.range = f.range
-      if (f.skill) payload.skill = f.skill
-      if (f.qualityNames.length > 0) payload.qualities = f.qualityNames.map((name) => ({ name }))
-    }
-    if (f.type === 'Armor') {
-      payload.soak = f.soak
-      payload.meleeDefense = f.meleeDefense
-      payload.rangedDefense = f.rangedDefense
-    }
-    if (f.type === 'Food') payload.hunger_stacks_removed = f.hungerStacksRemoved
-    if (f.type === 'Drink') payload.thirst_stacks_removed = f.thirstStacksRemoved
-    if ((f.type === 'Food' || f.type === 'Drink') && f.bonusEffects.trim()) payload.bonus_effects = f.bonusEffects.trim()
-    if (f.type === 'Light Source') {
-      payload.light_step_boost = f.lightStepBoost
-      if (f.lightCap) payload.light_cap = f.lightCap
-      payload.duration = f.duration
-      payload.fuel_type = f.fuelType
-    }
-    if ((f.type === 'Tool' || f.type === 'Mundane') && f.effect.trim()) payload.effect = f.effect.trim()
-
     const id = await createCustomObject(character!.sessionId, user.uid, ownerDisplayName, payload)
-    setObjectDocs((prev) => [...(prev ?? []), { ...payload, id, sessionId: character!.sessionId, ownerId: user.uid }])
-    addItem(id)
+    const newDoc: ObjectDoc = { ...payload, id, sessionId: character!.sessionId, ownerId: user.uid }
+    setObjectDocs((prev) => [...(prev ?? []), newDoc])
+    // Passing newDoc directly rather than letting addItem fall back to
+    // objectMap.get(id) — objectMap is derived from objectDocs state,
+    // and setObjectDocs above hasn't landed yet by the time this line
+    // runs (React batches the update). Without this, addItem would look
+    // up a doc that doesn't exist yet and silently skip setting
+    // currentDurability/currentUses, no matter what was in the form.
+    addItem(id, newDoc)
     setShowCustomItemForm(false)
-    setCustomItemForm({
-      name: '', description: '', type: 'Mundane', rarity: 0, encumbrance: 0,
-      damage: 0, damageType: 'Brawn-based', crit: 0, range: 'Engaged', skill: '', qualityNames: [],
-      soak: 0, meleeDefense: 0, rangedDefense: 0,
-      hungerStacksRemoved: 0, thirstStacksRemoved: 0, bonusEffects: '',
-      lightStepBoost: 0, lightCap: '', duration: 0, fuelType: 'Batteries',
-      effect: '', durability: undefined, uses: undefined, usesCannotRestore: false,
-    })
   }
 
-  function addItem(objectId: string) {
-    const doc = objectMap.get(objectId)
+  function addItem(objectId: string, docOverride?: ObjectDoc) {
+    const doc = docOverride ?? objectMap.get(objectId)
     const entry: InventoryEntry = { id: crypto.randomUUID(), objectId }
     if (doc?.durability !== undefined) entry.currentDurability = doc.durability
     if (doc?.uses !== undefined) entry.currentUses = doc.uses
@@ -1044,6 +1080,12 @@ export default function CharacterSheet() {
             const doc = objectMap.get(entry.objectId)
             const equipped = Object.values(character.equippedSlots).includes(entry.id)
             const viewing = viewingInventoryIndex === index
+            // Distinct from `destroyed` (Fragile, one-and-done — grayed
+            // out, functionally gone). This flags a still-present item
+            // that's currently unusable: broken (durability 0) or out of
+            // uses (0) — a glance-able warning border, not a fade-out,
+            // since both of these can be reversed (Repair, Restore Uses).
+            const unusable = entry.currentDurability === 0 || entry.currentUses === 0
             return (
               <button
                 key={entry.id}
@@ -1052,10 +1094,14 @@ export default function CharacterSheet() {
                   entry.destroyed
                     ? 'border-border bg-page text-fg-muted opacity-50'
                     : viewing
-                      ? 'ring-2 ring-blue-400 ring-offset-1 ring-offset-page border-accent bg-accent/10 text-fg'
-                      : equipped
-                        ? 'border-accent bg-accent/10 text-fg'
-                        : 'border-border bg-page text-fg-secondary hover:bg-surface-hover'
+                      ? `ring-2 ring-blue-400 ring-offset-1 ring-offset-page bg-accent/10 text-fg ${
+                          unusable ? 'border-warning' : 'border-accent'
+                        }`
+                      : unusable
+                        ? 'border-warning bg-page text-fg-muted'
+                        : equipped
+                          ? 'border-accent bg-accent/10 text-fg'
+                          : 'border-border bg-page text-fg-secondary hover:bg-surface-hover'
                 }`}
               >
                 {doc?.name ?? entry.objectId}
@@ -1126,6 +1172,16 @@ export default function CharacterSheet() {
                       className="rounded border border-border-strong px-3 py-1.5 text-xs text-fg hover:bg-surface-hover"
                     >
                       Repair
+                    </button>
+                  )}
+                  {doc.statModifiers?.some((m) => !m.autoApply) && (
+                    <button
+                      onClick={() => toggleApplied(viewingInventoryIndex)}
+                      className={`rounded border px-3 py-1.5 text-xs hover:bg-surface-hover ${
+                        entry.applied ? 'border-accent text-accent' : 'border-border-strong text-fg'
+                      }`}
+                    >
+                      {entry.applied ? 'Remove Application' : 'Apply'}
                     </button>
                   )}
                   <button
@@ -1261,323 +1317,89 @@ export default function CharacterSheet() {
                     </div>
                   </>
                 ) : (
-                  <div className="min-h-0 flex-1 overflow-y-auto rounded border border-border bg-page p-3">
-                    <p className="mb-2 text-sm text-fg-secondary">
-                      Custom doesn't mean simple — every field a real item has is available here too,
-                      not just name and description.
-                    </p>
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                      <input
-                        value={customItemForm.name}
-                        onChange={(e) => setCustomItemForm((f) => ({ ...f, name: e.target.value }))}
-                        placeholder="Item name"
-                        className="w-full rounded border border-border-strong bg-surface px-3 py-2 text-sm text-fg"
-                      />
-                      <select
-                        value={customItemForm.type}
-                        onChange={(e) => setCustomItemForm((f) => ({ ...f, type: e.target.value as ObjectDoc['type'] }))}
-                        className="w-full rounded border border-border-strong bg-surface px-3 py-2 text-sm text-fg"
-                      >
-                        <option value="Weapon">Weapon</option>
-                        <option value="Armor">Armor</option>
-                        <option value="Food">Food</option>
-                        <option value="Drink">Drink</option>
-                        <option value="Light Source">Light Source</option>
-                        <option value="Tool">Tool</option>
-                        <option value="Mundane">Mundane</option>
-                      </select>
-                    </div>
-                    <textarea
-                      value={customItemForm.description}
-                      onChange={(e) => setCustomItemForm((f) => ({ ...f, description: e.target.value }))}
-                      placeholder="Description (optional)"
-                      rows={2}
-                      className="mt-2 w-full rounded border border-border-strong bg-surface px-3 py-2 text-sm text-fg"
-                    />
-                    <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                      <label className="text-xs text-fg-muted">
-                        Rarity
-                        <input
-                          type="number"
-                          value={customItemForm.rarity}
-                          onChange={(e) => setCustomItemForm((f) => ({ ...f, rarity: Number(e.target.value) || 0 }))}
-                          className="mt-0.5 w-full rounded border border-border-strong bg-surface px-2 py-1 text-sm text-fg"
-                        />
-                      </label>
-                      <label className="text-xs text-fg-muted">
-                        Encumbrance
-                        <input
-                          type="number"
-                          value={customItemForm.encumbrance}
-                          onChange={(e) => setCustomItemForm((f) => ({ ...f, encumbrance: Number(e.target.value) || 0 }))}
-                          className="mt-0.5 w-full rounded border border-border-strong bg-surface px-2 py-1 text-sm text-fg"
-                        />
-                      </label>
-                      {(customItemForm.type === 'Weapon' || customItemForm.type === 'Armor') && (
-                        <label className="text-xs text-fg-muted">
-                          Durability
-                          <input
-                            type="number"
-                            value={customItemForm.durability ?? 3}
-                            onChange={(e) => setCustomItemForm((f) => ({ ...f, durability: Number(e.target.value) || 0 }))}
-                            className="mt-0.5 w-full rounded border border-border-strong bg-surface px-2 py-1 text-sm text-fg"
-                          />
-                        </label>
-                      )}
-                      {(customItemForm.type === 'Food' || customItemForm.type === 'Drink' || customItemForm.type === 'Tool') && (
-                        <>
-                          <label className="text-xs text-fg-muted">
-                            Uses
-                            <input
-                              type="number"
-                              value={customItemForm.uses ?? ''}
-                              onChange={(e) => setCustomItemForm((f) => ({ ...f, uses: e.target.value === '' ? undefined : Number(e.target.value) }))}
-                              placeholder="Unlimited"
-                              className="mt-0.5 w-full rounded border border-border-strong bg-surface px-2 py-1 text-sm text-fg"
-                            />
-                          </label>
-                          <label className="flex items-center gap-1 self-end text-xs text-fg-muted">
-                            <input
-                              type="checkbox"
-                              checked={customItemForm.usesCannotRestore}
-                              onChange={(e) => setCustomItemForm((f) => ({ ...f, usesCannotRestore: e.target.checked }))}
-                            />
-                            Cannot restore uses
-                          </label>
-                        </>
-                      )}
-                    </div>
-
-                    {customItemForm.type === 'Weapon' && (
-                      <div className="mt-3 rounded border border-border-strong bg-surface p-2">
-                        <p className="mb-2 text-xs font-semibold text-fg-secondary">Weapon fields</p>
-                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                          <label className="text-xs text-fg-muted">
-                            Damage
-                            <input
-                              type="number"
-                              value={customItemForm.damage}
-                              onChange={(e) => setCustomItemForm((f) => ({ ...f, damage: Number(e.target.value) || 0 }))}
-                              className="mt-0.5 w-full rounded border border-border-strong bg-page px-2 py-1 text-sm text-fg"
-                            />
-                          </label>
-                          <label className="text-xs text-fg-muted">
-                            Damage Type
-                            <select
-                              value={customItemForm.damageType}
-                              onChange={(e) => setCustomItemForm((f) => ({ ...f, damageType: e.target.value as 'Brawn-based' | 'Fixed' }))}
-                              className="mt-0.5 w-full rounded border border-border-strong bg-page px-2 py-1 text-sm text-fg"
-                            >
-                              <option value="Brawn-based">Brawn-based</option>
-                              <option value="Fixed">Fixed</option>
-                            </select>
-                          </label>
-                          <label className="text-xs text-fg-muted">
-                            Critical
-                            <input
-                              type="number"
-                              value={customItemForm.crit}
-                              onChange={(e) => setCustomItemForm((f) => ({ ...f, crit: Number(e.target.value) || 0 }))}
-                              className="mt-0.5 w-full rounded border border-border-strong bg-page px-2 py-1 text-sm text-fg"
-                            />
-                          </label>
-                          <label className="text-xs text-fg-muted">
-                            Range
-                            <select
-                              value={customItemForm.range}
-                              onChange={(e) => setCustomItemForm((f) => ({ ...f, range: e.target.value as NonNullable<ObjectDoc['range']> }))}
-                              className="mt-0.5 w-full rounded border border-border-strong bg-page px-2 py-1 text-sm text-fg"
-                            >
-                              <option value="Engaged">Engaged</option>
-                              <option value="Short">Short</option>
-                              <option value="Medium">Medium</option>
-                              <option value="Long">Long</option>
-                              <option value="Extreme">Extreme</option>
-                            </select>
-                          </label>
-                        </div>
-                        <label className="mt-2 block text-xs text-fg-muted">
-                          Governing skill
-                          <select
-                            value={customItemForm.skill}
-                            onChange={(e) => setCustomItemForm((f) => ({ ...f, skill: e.target.value }))}
-                            className="mt-0.5 w-full rounded border border-border-strong bg-page px-2 py-1 text-sm text-fg"
-                          >
-                            <option value="">None</option>
-                            {BBB_SKILLS.map((skillId) => (
-                              <option key={skillId} value={skillId}>
-                                {skillDocs.find((d) => d.id === skillId)?.name ?? skillId}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label className="mt-2 block text-xs text-fg-muted">
-                          Qualities (select any that apply)
-                          <select
-                            multiple
-                            value={customItemForm.qualityNames}
-                            onChange={(e) =>
-                              setCustomItemForm((f) => ({
-                                ...f,
-                                qualityNames: Array.from(e.target.selectedOptions).map((o) => o.value),
-                              }))
-                            }
-                            className="mt-0.5 h-24 w-full rounded border border-border-strong bg-page px-2 py-1 text-sm text-fg"
-                          >
-                            {qualityDocs.map((q) => (
-                              <option key={q.name} value={q.name}>{q.name}</option>
-                            ))}
-                          </select>
-                        </label>
-                      </div>
-                    )}
-
-                    {customItemForm.type === 'Armor' && (
-                      <div className="mt-3 rounded border border-border-strong bg-surface p-2">
-                        <p className="mb-2 text-xs font-semibold text-fg-secondary">Armor fields</p>
-                        <div className="grid grid-cols-3 gap-2">
-                          <label className="text-xs text-fg-muted">
-                            Soak
-                            <input
-                              type="number"
-                              value={customItemForm.soak}
-                              onChange={(e) => setCustomItemForm((f) => ({ ...f, soak: Number(e.target.value) || 0 }))}
-                              className="mt-0.5 w-full rounded border border-border-strong bg-page px-2 py-1 text-sm text-fg"
-                            />
-                          </label>
-                          <label className="text-xs text-fg-muted">
-                            Melee Defense
-                            <input
-                              type="number"
-                              value={customItemForm.meleeDefense}
-                              onChange={(e) => setCustomItemForm((f) => ({ ...f, meleeDefense: Number(e.target.value) || 0 }))}
-                              className="mt-0.5 w-full rounded border border-border-strong bg-page px-2 py-1 text-sm text-fg"
-                            />
-                          </label>
-                          <label className="text-xs text-fg-muted">
-                            Ranged Defense
-                            <input
-                              type="number"
-                              value={customItemForm.rangedDefense}
-                              onChange={(e) => setCustomItemForm((f) => ({ ...f, rangedDefense: Number(e.target.value) || 0 }))}
-                              className="mt-0.5 w-full rounded border border-border-strong bg-page px-2 py-1 text-sm text-fg"
-                            />
-                          </label>
-                        </div>
-                      </div>
-                    )}
-
-                    {(customItemForm.type === 'Food' || customItemForm.type === 'Drink') && (
-                      <div className="mt-3 rounded border border-border-strong bg-surface p-2">
-                        <p className="mb-2 text-xs font-semibold text-fg-secondary">
-                          {customItemForm.type} fields
-                        </p>
-                        <label className="block text-xs text-fg-muted">
-                          {customItemForm.type === 'Food' ? 'Hunger stacks removed' : 'Thirst stacks removed'}
-                          <input
-                            type="number"
-                            value={customItemForm.type === 'Food' ? customItemForm.hungerStacksRemoved : customItemForm.thirstStacksRemoved}
-                            onChange={(e) =>
-                              setCustomItemForm((f) =>
-                                f.type === 'Food'
-                                  ? { ...f, hungerStacksRemoved: Number(e.target.value) || 0 }
-                                  : { ...f, thirstStacksRemoved: Number(e.target.value) || 0 }
-                              )
-                            }
-                            className="mt-0.5 w-full rounded border border-border-strong bg-page px-2 py-1 text-sm text-fg"
-                          />
-                        </label>
-                        <label className="mt-2 block text-xs text-fg-muted">
-                          Bonus effect (optional)
-                          <input
-                            value={customItemForm.bonusEffects}
-                            onChange={(e) => setCustomItemForm((f) => ({ ...f, bonusEffects: e.target.value }))}
-                            className="mt-0.5 w-full rounded border border-border-strong bg-page px-2 py-1 text-sm text-fg"
-                          />
-                        </label>
-                      </div>
-                    )}
-
-                    {customItemForm.type === 'Light Source' && (
-                      <div className="mt-3 rounded border border-border-strong bg-surface p-2">
-                        <p className="mb-2 text-xs font-semibold text-fg-secondary">Light Source fields</p>
-                        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                          <label className="text-xs text-fg-muted">
-                            Light boost
-                            <input
-                              type="number"
-                              value={customItemForm.lightStepBoost}
-                              onChange={(e) => setCustomItemForm((f) => ({ ...f, lightStepBoost: Number(e.target.value) || 0 }))}
-                              className="mt-0.5 w-full rounded border border-border-strong bg-page px-2 py-1 text-sm text-fg"
-                            />
-                          </label>
-                          <label className="text-xs text-fg-muted">
-                            Light cap
-                            <input
-                              value={customItemForm.lightCap}
-                              onChange={(e) => setCustomItemForm((f) => ({ ...f, lightCap: e.target.value }))}
-                              placeholder="e.g. Well Lit"
-                              className="mt-0.5 w-full rounded border border-border-strong bg-page px-2 py-1 text-sm text-fg"
-                            />
-                          </label>
-                          <label className="text-xs text-fg-muted">
-                            Duration
-                            <input
-                              type="number"
-                              value={customItemForm.duration}
-                              onChange={(e) => setCustomItemForm((f) => ({ ...f, duration: Number(e.target.value) || 0 }))}
-                              className="mt-0.5 w-full rounded border border-border-strong bg-page px-2 py-1 text-sm text-fg"
-                            />
-                          </label>
-                          <label className="text-xs text-fg-muted">
-                            Fuel type
-                            <select
-                              value={customItemForm.fuelType}
-                              onChange={(e) => setCustomItemForm((f) => ({ ...f, fuelType: e.target.value as NonNullable<ObjectDoc['fuel_type']> }))}
-                              className="mt-0.5 w-full rounded border border-border-strong bg-page px-2 py-1 text-sm text-fg"
-                            >
-                              <option value="Batteries">Batteries</option>
-                              <option value="Gasoline">Gasoline</option>
-                              <option value="Single Use">Single Use</option>
-                              <option value="None">None</option>
-                            </select>
-                          </label>
-                        </div>
-                      </div>
-                    )}
-
-                    {(customItemForm.type === 'Tool' || customItemForm.type === 'Mundane') && (
-                      <label className="mt-3 block text-xs text-fg-muted">
-                        Effect (optional — leave blank for a purely cosmetic item)
-                        <input
-                          value={customItemForm.effect}
-                          onChange={(e) => setCustomItemForm((f) => ({ ...f, effect: e.target.value }))}
-                          className="mt-0.5 w-full rounded border border-border-strong bg-surface px-2 py-1 text-sm text-fg"
-                        />
-                      </label>
-                    )}
-
-                    <div className="mt-3 flex gap-2">
-                      <button
-                        onClick={handleCreateCustomItem}
-                        disabled={!customItemForm.name.trim()}
-                        className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg hover:bg-accent-hover disabled:bg-disabled disabled:text-disabled-fg"
-                      >
-                        Create and Add
-                      </button>
-                      <button
-                        onClick={() => setShowCustomItemForm(false)}
-                        className="rounded border border-border-strong px-3 py-1.5 text-xs text-fg hover:bg-surface-hover"
-                      >
-                        Back
-                      </button>
-                    </div>
-                  </div>
+                  <CustomItemForm
+                    activeSlots={GAME_CONFIG.activeSlots}
+                    qualityDocs={qualityDocs}
+                    skillDocs={skillDocs}
+                    onCreate={handleCreateCustomItem}
+                    onCancel={() => setShowCustomItemForm(false)}
+                  />
                 )}
               </div>
             </div>
           )
         })()}
+
+        {equipChoice && (
+          <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/60 sm:p-4">
+            <div className="w-full max-w-sm rounded-lg border border-accent bg-surface p-4">
+              <p className="text-sm font-semibold text-fg">
+                Equip {objectMap.get(equipChoice.entry.objectId)?.name} — which slot?
+              </p>
+              <div className="mt-3 flex flex-col gap-2">
+                {equipChoice.slots.map((slot) => {
+                  const occupantId = character.equippedSlots[slot as keyof EquippedSlots]
+                  const occupantEntry = occupantId ? character.inventory.find((e) => e.id === occupantId) : null
+                  const occupantName = occupantEntry ? objectMap.get(occupantEntry.objectId)?.name : null
+                  return (
+                    <button
+                      key={slot}
+                      onClick={() => {
+                        performEquip(equipChoice.entry, [slot])
+                        setEquipChoice(null)
+                      }}
+                      className="rounded border border-border-strong px-3 py-2 text-left text-sm text-fg hover:bg-surface-hover"
+                    >
+                      {slot}
+                      {occupantName && <span className="block text-xs text-fg-muted">Replaces {occupantName}</span>}
+                    </button>
+                  )
+                })}
+              </div>
+              <button
+                onClick={() => setEquipChoice(null)}
+                className="mt-3 rounded border border-border-strong px-3 py-1.5 text-xs text-fg hover:bg-surface-hover"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {equipConfirm && (
+          <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/60 sm:p-4">
+            <div className="w-full max-w-sm rounded-lg border border-warning bg-surface p-4">
+              <p className="text-sm font-semibold text-fg">
+                Equip {objectMap.get(equipConfirm.entry.objectId)?.name}?
+              </p>
+              <p className="mt-2 text-sm text-fg-secondary">
+                This fills {equipConfirm.slots.join(' and ')} at once, unequipping:
+              </p>
+              <ul className="mt-1 list-disc pl-5 text-sm text-fg">
+                {equipConfirm.displaced.map((d, i) => (
+                  <li key={i}>{d.name} (from {d.slot})</li>
+                ))}
+              </ul>
+              <div className="mt-3 flex gap-2">
+                <button
+                  onClick={() => {
+                    performEquip(equipConfirm.entry, equipConfirm.slots)
+                    setEquipConfirm(null)
+                  }}
+                  className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg hover:bg-accent-hover"
+                >
+                  Equip
+                </button>
+                <button
+                  onClick={() => setEquipConfirm(null)}
+                  className="rounded border border-border-strong px-3 py-1.5 text-xs text-fg hover:bg-surface-hover"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </SheetSection>
 
       <SheetSection title="Skills">

@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { BBB_UNIVERSAL_GEAR_ID, BBB_GEAR_IDS, BBB_FREE_GEAR_PICKS } from '../../lib/gameConfigs/bbb'
 import type { StepProps } from '../../pages/CreateCharacter'
+import type { ObjectDoc } from '../../lib/characters'
+import CustomItemForm from '../sheet/CustomItemForm'
 
-export default function StepGear({ draft, updateDraft, setCanProceed, objectDocs }: StepProps) {
+export default function StepGear({ draft, updateDraft, setCanProceed, objectDocs, qualityDocs, skillDocs }: StepProps) {
   const [viewingItemId, setViewingItemId] = useState<string | null>(null)
   const [viewingCustomIndex, setViewingCustomIndex] = useState<number | null>(null)
-  const [customName, setCustomName] = useState('')
-  const [customDescription, setCustomDescription] = useState('')
+  const [showCustomItemForm, setShowCustomItemForm] = useState(false)
 
   useEffect(() => {
     setCanProceed(draft.gearObjectIds.length === BBB_FREE_GEAR_PICKS)
@@ -27,19 +28,17 @@ export default function StepGear({ draft, updateDraft, setCanProceed, objectDocs
     })
   }
 
-  // Purely local — nothing is written to Firestore until the character is
-  // actually created in StepReview. Staged here means the player can back
-  // out of character creation entirely without leaving an orphaned item
-  // behind in the database.
-  function addCustomItem() {
-    if (!customName.trim()) return
+  // Staged locally exactly like before — nothing is written to Firestore
+  // until the character is actually created in StepReview, so backing out
+  // of character creation never leaves an orphaned item in the database.
+  // The payload itself now comes from CustomItemForm rather than a bare
+  // name/description pair, since Personal Items reuses the same form the
+  // character sheet uses — just locked to Mundane with mechanics hidden.
+  function addCustomItem(payload: Omit<ObjectDoc, 'id' | 'sessionId' | 'ownerId'>) {
     const newIndex = draft.customItems.length
-    updateDraft({
-      customItems: [...draft.customItems, { name: customName.trim(), description: customDescription.trim() }],
-    })
+    updateDraft({ customItems: [...draft.customItems, payload] })
     setViewingCustomIndex(newIndex)
-    setCustomName('')
-    setCustomDescription('')
+    setShowCustomItemForm(false)
   }
 
   function removeCustomItem(index: number) {
@@ -120,7 +119,10 @@ export default function StepGear({ draft, updateDraft, setCanProceed, objectDocs
             {draft.customItems.map((item, index) => (
               <button
                 key={index}
-                onClick={() => setViewingCustomIndex(index)}
+                onClick={() => {
+                  setViewingCustomIndex(index)
+                  setShowCustomItemForm(false)
+                }}
                 className={`h-12 w-full rounded border px-3 py-2 text-sm ${
                   viewingCustomIndex === index
                     ? 'border-accent bg-accent/10 text-fg'
@@ -148,28 +150,29 @@ export default function StepGear({ draft, updateDraft, setCanProceed, objectDocs
           </div>
         )}
 
-        <div className="mt-3 max-w-[400px] space-y-2 rounded-lg border border-border bg-surface p-4">
-          <input
-            value={customName}
-            onChange={(e) => setCustomName(e.target.value)}
-            placeholder="Item name"
-            className="w-full rounded border border-border-strong bg-page px-3 py-2 text-sm text-fg"
-          />
-          <textarea
-            value={customDescription}
-            onChange={(e) => setCustomDescription(e.target.value)}
-            placeholder="Description (optional)"
-            rows={2}
-            className="w-full rounded border border-border-strong bg-page px-3 py-2 text-sm text-fg"
-          />
+        {showCustomItemForm ? (
+          <div className="mt-3 max-w-125">
+            <CustomItemForm
+              activeSlots={[]}
+              qualityDocs={qualityDocs}
+              skillDocs={skillDocs}
+              fixedType="Mundane"
+              hideMechanics
+              onCreate={addCustomItem}
+              onCancel={() => setShowCustomItemForm(false)}
+            />
+          </div>
+        ) : (
           <button
-            onClick={addCustomItem}
-            disabled={!customName.trim()}
-            className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg hover:bg-accent-hover disabled:bg-disabled disabled:text-disabled-fg"
+            onClick={() => {
+              setShowCustomItemForm(true)
+              setViewingCustomIndex(null)
+            }}
+            className="mt-3 rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg hover:bg-accent-hover"
           >
-            Add item
+            + Add personal item
           </button>
-        </div>
+        )}
       </div>
     </div>
   )

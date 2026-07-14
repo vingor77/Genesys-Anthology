@@ -46,7 +46,7 @@ export interface CharacterDraft {
   weaponObjectId: string | null
   armorObjectId: string | null
   gearObjectIds: string[]
-  customItems: { name: string; description: string }[] // staged locally — not written to Firestore until StepReview actually creates the character
+  customItems: Omit<ObjectDoc, 'id' | 'sessionId' | 'ownerId'>[] // staged locally — not written to Firestore until StepReview actually creates the character
   identityNotes: string[]
   totalXP: number
   strength: string

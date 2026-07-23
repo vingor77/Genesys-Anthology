@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
-import { BBB_CAREERS, BBB_UNIVERSAL_GEAR_ID, BBB_SPECIES, CURRENCY_LABEL } from '../../lib/gameConfigs/bbb'
+import { BBB_CAREERS, BBB_UNIVERSAL_GEAR_ID, BBB_SPECIES, CURRENCY_LABEL, ACTIVE_SLOTS } from '../../lib/gameConfigs/bbb'
 import { totalSpentXP, derivedStats, computeTalentBonuses, computeCareerSkills } from '../../lib/genesysCalc'
 import { createCharacter, createCustomObject, type InventoryEntry, type ObjectDoc } from '../../lib/characters'
 import type { StepProps } from '../../pages/CreateCharacter'
@@ -95,6 +95,21 @@ export default function StepReview({ draft, objectDocs, skillDocs, talentDocs }:
     return entries
   }
 
+  // Character creation has no interactive slot-choice UI the way the
+  // sheet's equip flow does — there's no moment to ask "which hand?" mid
+  // wizard. So: 'all' mode fills every eligible slot (a two-handed
+  // starting weapon gets seated correctly in both), and 'any' mode (or a
+  // single-slot item) just takes the first eligible slot as a sensible
+  // default rather than leaving it unequipped. This replaces the old
+  // hardcoded 'Main Hand'/'Chest' assumption, which would have silently
+  // left a two-handed starting weapon only half-equipped.
+  function slotsToFill(doc: ObjectDoc | null | undefined): string[] {
+    const eligible = (doc?.slots ?? []).filter((s) => (ACTIVE_SLOTS as readonly string[]).includes(s))
+    if (eligible.length === 0) return []
+    if (eligible.length > 1 && doc?.slotMode === 'all') return eligible
+    return [eligible[0]]
+  }
+
   async function handleCreate() {
     if (!sessionId || !user) return
     setSaving(true)
@@ -102,8 +117,12 @@ export default function StepReview({ draft, objectDocs, skillDocs, talentDocs }:
     try {
       const inventory = await materializeInventory()
       const equippedSlots: Record<string, string> = {}
-      if (draft.weaponObjectId) equippedSlots['Main Hand'] = weaponEntryId
-      if (draft.armorObjectId) equippedSlots['Chest'] = armorEntryId
+      if (draft.weaponObjectId) {
+        for (const slot of slotsToFill(weapon)) equippedSlots[slot] = weaponEntryId
+      }
+      if (draft.armorObjectId) {
+        for (const slot of slotsToFill(armor)) equippedSlots[slot] = armorEntryId
+      }
 
       await createCharacter(user.uid, {
         sessionId,

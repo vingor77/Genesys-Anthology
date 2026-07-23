@@ -58,13 +58,17 @@ export const BBB_CAREERS: CareerConfig[] = [
   },
 ]
 
-// Which skill documents (by id) are valid for BB&B — the sheet renders
-// exactly this set, in this order, grouped by BBB_SKILL_CATEGORY below.
+// TEST MODE — every skill in the shared collection unlocked, not just
+// BBB's real curated 27. Restore the real BBB_SKILLS list (documented in
+// data_audit_plan.md) once this test pass is done.
 export const BBB_SKILLS: string[] = [
-  'athletics', 'cool', 'coordination', 'discipline', 'operating', 'perception',
-  'resilience', 'skulduggery', 'vigilance', 'charm', 'coercion', 'deception',
-  'negotiation', 'knowledge', 'knowledge-cosmic', 'knowledge-store',
-  'melee', 'ranged',
+  'charm', 'coercion', 'deception', 'leadership', 'negotiation',
+  'alchemy', 'astrocartography', 'athletics', 'computers', 'cool', 'coordination',
+  'discipline', 'driving', 'mechanics', 'medicine', 'operating', 'perception',
+  'piloting', 'resilience', 'riding', 'skulduggery', 'stealth', 'streetwise',
+  'survival', 'vigilance', 'fabrication', 'fine-crafting', 'compounding',
+  'knowledge', 'knowledge-anomalous', 'knowledge-store',
+  'brawl', 'melee', 'melee-light', 'melee-heavy', 'ranged', 'ranged-light', 'ranged-heavy', 'gunnery',
 ]
 
 // Small, deliberate exception: BB&B uses Agility for Skulduggery, not the
@@ -74,83 +78,109 @@ export const BBB_SKILLS: string[] = [
 // still says Cunning for any other game. This is just a one-field lookup
 // the sheet checks after fetching a skill's default characteristic,
 // specific to this one game and this one skill.
-export const BBB_SKILL_CHARACTERISTIC_OVERRIDES: Record<string, string> = {
-  skulduggery: 'agility',
-}
+// Was an Agility override folding Stealth into Skulduggery — reverted
+// once Stealth became its own separate BBB skill again, since the whole
+// reason for the fold no longer applied. That decision was made but the
+// actual code change was never carried out until now — Skulduggery goes
+// back to the book default (Cunning), no override needed.
+export const BBB_SKILL_CHARACTERISTIC_OVERRIDES: Record<string, string> = {}
 
 export type SkillCategory = 'Combat' | 'Social' | 'Knowledge' | 'General'
 
 export const SKILL_CATEGORY_ORDER: SkillCategory[] = ['General', 'Combat', 'Social', 'Knowledge']
 
+// TEST MODE — full category map for all 39 skills, matching Skills.ts.
 export const BBB_SKILL_CATEGORY: Record<string, SkillCategory> = {
-  melee: 'Combat',
-  ranged: 'Combat',
-  charm: 'Social',
-  coercion: 'Social',
-  deception: 'Social',
-  negotiation: 'Social',
-  knowledge: 'Knowledge',
-  'knowledge-cosmic': 'Knowledge',
-  'knowledge-store': 'Knowledge',
-  athletics: 'General',
-  cool: 'General',
-  coordination: 'General',
-  discipline: 'General',
-  operating: 'General',
-  perception: 'General',
-  resilience: 'General',
-  skulduggery: 'General',
-  vigilance: 'General',
+  charm: 'Social', coercion: 'Social', deception: 'Social', leadership: 'Social', negotiation: 'Social',
+  alchemy: 'General', astrocartography: 'General', athletics: 'General', computers: 'General', cool: 'General',
+  coordination: 'General', discipline: 'General', driving: 'General', mechanics: 'General', medicine: 'General',
+  operating: 'General', perception: 'General', piloting: 'General', resilience: 'General', riding: 'General',
+  skulduggery: 'General', stealth: 'General', streetwise: 'General', survival: 'General', vigilance: 'General',
+  fabrication: 'General', 'fine-crafting': 'General', compounding: 'General',
+  knowledge: 'Knowledge', 'knowledge-anomalous': 'Knowledge', 'knowledge-store': 'Knowledge',
+  brawl: 'Combat', melee: 'Combat', 'melee-light': 'Combat', 'melee-heavy': 'Combat',
+  ranged: 'Combat', 'ranged-light': 'Combat', 'ranged-heavy': 'Combat', gunnery: 'Combat',
 }
 
-// Which talent documents (by id) are valid for BB&B.
+// TEST MODE — every talent in the shared collection unlocked, not just
+// BBB's real curated subset. Restore the real BBB_TALENTS list once this
+// test pass is done.
 export const BBB_TALENTS: string[] = [
-  // Tier 1
-  'bought-info', 'clever-retort', 'desperate-recovery', 'durable', 'grit', 'jump-up',
-  'knack-for-it', 'know-somebody', 'parry', 'proper-upbringing', 'quick-draw', 'quick-strike',
-  'rapid-reaction', 'second-wind', 'swift', 'toughened',
-  // Tier 2
-  'coordinated-assault', 'counteroffer', 'heightened-awareness-talent', 'inspiring-rhetoric',
-  'inventor', 'lucky-strike', 'scathing-tirade', 'side-step',
-  // Tier 3
-  'dodge', 'field-commander', 'forgot-to-count', 'inspiring-rhetoric-improved',
+  // Tier 1 (23)
+  'bought-info', 'clever-retort', 'desperate-recovery', 'duelist', 'durable', 'forager', 'grit',
+  'hamstring-shot', 'jump-up', 'knack-for-it', 'know-somebody', 'lets-ride', 'one-with-nature',
+  'parry', 'proper-upbringing', 'quick-draw', 'quick-strike', 'rapid-reaction', 'second-wind',
+  'surgeon', 'swift', 'toughened', 'unremarkable',
+  // Tier 2 (13)
+  'basic-military-training', 'berserk', 'coordinated-assault', 'counteroffer', 'daring-aviator',
+  'defensive-stance', 'inventor', 'fan-the-hammer', 'heightened-awareness-talent', 'inspiring-rhetoric',
+  'lucky-strike', 'scathing-tirade', 'side-step',
+  // Tier 3 (12)
+  'dodge', 'forgot-to-count', 'eagle-eyes', 'field-commander', 'good-arm', 'inspiring-rhetoric-improved',
   'painkiller-specialization', 'scathing-tirade-improved', 'heroic-will', 'natural',
-  // Tier 4
-  'cant-we-talk-about-this', 'deadeye', 'defensive', 'enduring', 'field-commander-improved',
+  'fan-the-hammer-improved', 'parry-improved',
+  // Tier 4 (9)
+  'cant-we-talk-about-this', 'deadeye', 'defensive-talent', 'enduring', 'field-commander-improved',
   'how-convenient', 'inspiring-rhetoric-supreme', 'mad-inventor', 'scathing-tirade-supreme',
-  // Tier 5
+  // Tier 5 (4)
   'dedication', 'indomitable', 'master', 'ruinous-repartee',
 ]
 
-export const BBB_STARTING_XP = 110
+// TEST MODE — bumped up so nothing during testing is budget-constrained.
+// Restore the real BBB starting values once this test pass is done.
+export const BBB_STARTING_XP = 99999
 export const BBB_STARTING_CHARACTERISTIC = 2
-export const BBB_MAX_STARTING_CHARACTERISTIC = 5
-export const BBB_MAX_STARTING_SKILL_RANK = 2
-export const BBB_FREE_CAREER_SKILL_PICKS = 4
-export const BBB_MAX_STARTING_WEAPON_DAMAGE = 3
+export const BBB_MAX_STARTING_CHARACTERISTIC = 6
+export const BBB_MAX_STARTING_SKILL_RANK = 5
+export const BBB_FREE_CAREER_SKILL_PICKS = 8
+
+// BBB_WEAPON_IDS below is a curated list — every weapon in it is already
+// meant to be selectable at chargen. A separate damage cap on top of that
+// was a holdover from before the catalog became fixed pre-named items;
+// once BBB_WEAPON_IDS itself is the curation, a second filter on top is
+// redundant and, worse, silently hides anything above the cap without
+// the picker saying why. Removed rather than raised.
 
 // Object ids for BB&B's actual starting items — filters out the earlier
 // generic schema-validation Objects (Store Vest, etc.) that aren't part
 // of BB&B's real catalog. Concrete, pre-named, pre-qualified items now,
 // not templates — the player picks one directly, nothing to customize.
 export const BBB_WEAPON_IDS: string[] = [
-  'stress-ball', 'coffee-mug', 'candle', 'paperweight',
-  'box-cutter', 'scissors', 'letter-opener', 'knife',
-  'meat-tenderizer', 'wrench', 'mop-broom-handle', 'yardstick',
+  'box-cutter', 'meat-tenderizer', 'wrench', 'broom-handle', 'porcelain-mug', 'makeshift-nail-gun',
+  // TEST MODE additions — remove after this test pass
+  'test-blade', 'test-cannon', 'test-spear', 'test-net-gun', 'test-stunner', 'test-rifle',
+  'test-cleaver', 'test-unwieldy-hammer', 'test-throwing-javelin', 'test-inferior-chunk',
 ]
 
-export const BBB_ARMOR_IDS: string[] = ['work-apron', 'thick-jacket', 'layered-cardboard', 'pot-lid-shield-rig']
+export const BBB_ARMOR_IDS: string[] = ['work-apron', 'thick-jacket', 'riot-shield-rig', 'police-uniform']
 
 export const BBB_UNIVERSAL_GEAR_ID = 'walkie-talkie'
 
+// Normally employee-of-the-month-badge is deliberately excluded here —
+// obtainable during play through the sheet's Add Item catalog (which
+// reads the full objects collection, not this list), just not available
+// as a free chargen pick. Included above for this test pass only.
+// TEST MODE — includes employee-of-the-month-badge, which is normally
+// deliberately excluded here (play-only, obtained through the sheet's
+// own Add Item catalog rather than a chargen pick). Remove it again once
+// this test pass is done.
 export const BBB_GEAR_IDS: string[] = [
-  'duct-tape', 'first-aid-kit', 'water-bottle-bbb', 'energy-drink', 'flashlight-bbb',
-  'break-room-snacks', 'umbrella', 'cleaning-supplies', 'scanner', 'blanket',
+  'salad', 'sandwich', 'energy-drink', 'stale-coffee',
+  'store-flashlight', 'wind-up-lantern', 'utility-multitool', 'managers-clipboard', 'crumpled-store-manual',
+  'employee-of-the-month-badge',
+  // TEST MODE additions — remove after this test pass
+  'test-direct-modifier-charm', 'test-fabrication-kit', 'test-fine-crafting-kit', 'test-compounding-kit',
 ]
 
-// Not explicitly settled — picked 2 as a reasonable default (out of 10
-// available), same shape as other "pick N" chargen steps. Easy to adjust.
-export const BBB_FREE_GEAR_PICKS = 2
+// Split into two required picks rather than one flat "pick N" — a
+// one-use item and two reusable items. "One-use" isn't a literal use
+// count; it means gone for good once exhausted (usesCannotRestore, or
+// carries the Fragile quality), regardless of whether that's 1 use or 5.
+// Which of the 10 catalog items falls into which pool is entirely
+// data-driven off those fields — nothing here needs to change once the
+// catalog is redesigned.
+export const BBB_FREE_GEAR_PICKS_ONE_USE = 1
+export const BBB_FREE_GEAR_PICKS_REUSABLE = 2
 
 export const CURRENCY_LABEL = 'Dollars'
 
@@ -176,9 +206,16 @@ export const VISIBLE_SHEET_SECTIONS = [
 // its crafting/survival systems actually use them.
 export const VISIBLE_ITEM_FIELDS = {
   factionExclusive: false,
-  craftingMaterial: false,
-  repairMaterials: false,
-  craftSkill: false,
+  craftingMaterial: true,
+  // Flagging: these two look like they were mistakenly hidden rather
+  // than deliberately — BBB has a real crafting/repair system (three
+  // crafting skills, Jury Rig, Mad Inventor), so hiding the fields that
+  // drive it doesn't match "this game doesn't use it" the way the other
+  // false flags above genuinely do. Flipped on here to actually test
+  // them; worth deciding whether this should just stay on permanently
+  // rather than reverting after this test pass.
+  repairMaterials: true,
+  craftSkill: true,
   hungerStacksRemoved: false,
   thirstStacksRemoved: false,
   lightSourceDetails: false, // covers light_step_boost/light_cap/duration/fuel_type as a group
@@ -189,10 +226,10 @@ export const VISIBLE_ITEM_FIELDS = {
   protectionType: false,
   curesSickness: false,
   recoveryRollModifier: false, // pairs with curesSickness — was missing its own gate before
-  // Not a "this game doesn't use it" gate like the rest above — these two
-  // stay false everywhere, any game, until an actual dice roller exists
-  // to consume them. Reusing the same flag mechanism rather than building
-  // a second system for "not implemented yet" vs "not used by this game."
-  poolModifiers: false,
-  resultModifiers: false,
+  // Was "false everywhere, any game, until a dice roller exists to
+  // consume them" — that roller now exists and does consume them, so
+  // this gate is genuinely outdated rather than a test-mode loosening.
+  // Flipped on for good, not just for this test pass.
+  poolModifiers: true,
+  resultModifiers: true,
 }

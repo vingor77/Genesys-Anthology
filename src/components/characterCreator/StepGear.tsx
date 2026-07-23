@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { BBB_UNIVERSAL_GEAR_ID, BBB_GEAR_IDS, BBB_FREE_GEAR_PICKS } from '../../lib/gameConfigs/bbb'
+import { BBB_UNIVERSAL_GEAR_ID, BBB_GEAR_IDS, BBB_FREE_GEAR_PICKS_ONE_USE, BBB_FREE_GEAR_PICKS_REUSABLE } from '../../lib/gameConfigs/bbb'
 import type { StepProps } from '../../pages/CreateCharacter'
 import type { ObjectDoc } from '../../lib/characters'
 import CustomItemForm from '../sheet/CustomItemForm'
@@ -9,18 +9,42 @@ export default function StepGear({ draft, updateDraft, setCanProceed, objectDocs
   const [viewingCustomIndex, setViewingCustomIndex] = useState<number | null>(null)
   const [showCustomItemForm, setShowCustomItemForm] = useState(false)
 
+  const gearPool = objectDocs.filter((o) => BBB_GEAR_IDS.includes(o.id))
+  // The split is entirely data-driven off each item's own `uses` field —
+  // "one-use" means used once and gone (uses === 1), "reusable" covers
+  // everything else: multi-charge consumables, unlimited-use tools, or no
+  // uses field at all. Redesigning the catalog never requires touching
+  // this logic, only which items end up with uses === 1.
+  // One-use isn't "uses === 1" — it's anything that's gone for good once
+  // exhausted: either the item itself says so (usesCannotRestore), or it
+  // carries the Fragile quality (breaks after its last use, same effect
+  // whether that's 1 use or 5). Everything else — restorable consumables,
+  // unlimited-use tools, or no uses field at all — is reusable.
+  function isOneUse(o: ObjectDoc): boolean {
+    return o.usesCannotRestore === true || (o.qualities?.some((q) => q.name === 'Fragile') ?? false)
+  }
+  const oneUsePool = gearPool.filter(isOneUse)
+  const reusablePool = gearPool.filter((o) => !isOneUse(o))
+
+  const selectedOneUse = draft.gearObjectIds.filter((id) => oneUsePool.some((o) => o.id === id))
+  const selectedReusable = draft.gearObjectIds.filter((id) => reusablePool.some((o) => o.id === id))
+
   useEffect(() => {
-    setCanProceed(draft.gearObjectIds.length === BBB_FREE_GEAR_PICKS)
-  }, [draft.gearObjectIds, setCanProceed])
+    setCanProceed(
+      selectedOneUse.length === BBB_FREE_GEAR_PICKS_ONE_USE && selectedReusable.length === BBB_FREE_GEAR_PICKS_REUSABLE
+    )
+  }, [selectedOneUse.length, selectedReusable.length, setCanProceed])
 
   const universal = objectDocs.find((o) => o.id === BBB_UNIVERSAL_GEAR_ID)
-  const gearPool = objectDocs.filter((o) => BBB_GEAR_IDS.includes(o.id))
-  const atLimit = draft.gearObjectIds.length >= BBB_FREE_GEAR_PICKS
 
-  function toggle(id: string) {
+  function toggle(id: string, pool: 'oneUse' | 'reusable') {
     setViewingItemId(id)
     const isSelected = draft.gearObjectIds.includes(id)
-    if (!isSelected && atLimit) return
+    const atPoolLimit =
+      pool === 'oneUse'
+        ? selectedOneUse.length >= BBB_FREE_GEAR_PICKS_ONE_USE
+        : selectedReusable.length >= BBB_FREE_GEAR_PICKS_REUSABLE
+    if (!isSelected && atPoolLimit) return
     updateDraft({
       gearObjectIds: isSelected
         ? draft.gearObjectIds.filter((g) => g !== id)
@@ -49,15 +73,43 @@ export default function StepGear({ draft, updateDraft, setCanProceed, objectDocs
   const viewingItem = viewingItemId ? gearPool.find((i) => i.id === viewingItemId) ?? null : null
   const viewingCustom = viewingCustomIndex !== null ? draft.customItems[viewingCustomIndex] ?? null : null
 
+  function GearGrid({ pool, poolKind }: { pool: ObjectDoc[]; poolKind: 'oneUse' | 'reusable' }) {
+    const selectedCount = poolKind === 'oneUse' ? selectedOneUse.length : selectedReusable.length
+    const limit = poolKind === 'oneUse' ? BBB_FREE_GEAR_PICKS_ONE_USE : BBB_FREE_GEAR_PICKS_REUSABLE
+    return (
+      <div className="mb-4 max-w-[800px]">
+        <p className="mb-2 text-sm text-fg-secondary">
+          {poolKind === 'oneUse' ? 'One-use item' : 'Reusable items'} — choose {limit}{' '}
+          <span className="font-medium text-accent">({selectedCount}/{limit} selected)</span>
+        </p>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
+          {pool.map((item) => {
+            const selected = draft.gearObjectIds.includes(item.id)
+            const disabled = !selected && selectedCount >= limit
+            return (
+              <button
+                key={item.id}
+                onClick={() => toggle(item.id, poolKind)}
+                disabled={disabled}
+                className={`w-full h-12 rounded border px-3 py-2 text-sm disabled:opacity-40 ${
+                  selected
+                    ? 'border-accent bg-accent/10 text-fg'
+                    : 'border-border bg-surface text-fg-secondary hover:bg-surface-hover'
+                }`}
+              >
+                {item.name}
+                {selected && <span className="ml-1 text-accent">✓</span>}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div>
       <h2 className="mb-1 text-xl font-semibold text-fg">Gear</h2>
-      <p className="mb-4 text-sm text-fg-secondary">
-        Choose {BBB_FREE_GEAR_PICKS} —{' '}
-        <span className="font-medium text-accent">
-          {draft.gearObjectIds.length}/{BBB_FREE_GEAR_PICKS} selected
-        </span>
-      </p>
 
       {universal && (
         <div className="mb-4 max-w-[800px] rounded-lg border-2 border-accent bg-surface p-3">
@@ -71,27 +123,8 @@ export default function StepGear({ draft, updateDraft, setCanProceed, objectDocs
         </div>
       )}
 
-      <div className="grid max-w-[800px] grid-cols-1 gap-2 sm:grid-cols-4">
-        {gearPool.map((item) => {
-          const selected = draft.gearObjectIds.includes(item.id)
-          const disabled = !selected && atLimit
-          return (
-            <button
-              key={item.id}
-              onClick={() => toggle(item.id)}
-              disabled={disabled}
-              className={`w-full h-12 rounded border px-3 py-2 text-sm disabled:opacity-40 ${
-                selected
-                  ? 'border-accent bg-accent/10 text-fg'
-                  : 'border-border bg-surface text-fg-secondary hover:bg-surface-hover'
-              }`}
-            >
-              {item.name}
-              {selected && <span className="ml-1 text-accent">✓</span>}
-            </button>
-          )
-        })}
-      </div>
+      <GearGrid pool={oneUsePool} poolKind="oneUse" />
+      <GearGrid pool={reusablePool} poolKind="reusable" />
 
       {viewingItem && (
         <div className="mt-4 max-w-[800px] rounded-lg border border-accent bg-surface p-4">
@@ -151,7 +184,7 @@ export default function StepGear({ draft, updateDraft, setCanProceed, objectDocs
         )}
 
         {showCustomItemForm ? (
-          <div className="mt-3 max-w-125">
+          <div className="mt-3 max-w-[500px]">
             <CustomItemForm
               activeSlots={[]}
               qualityDocs={qualityDocs}

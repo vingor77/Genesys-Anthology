@@ -20,7 +20,16 @@ const QUALITIES_BY_TYPE: Record<ObjectDoc['type'], 'all' | string[]> = {
 // Pool/result modifier type enums — from the Shared Enums section of the
 // master schema. Kept here rather than inline in the JSX since both
 // dropdowns reference them.
-const POOL_MODIFIER_TYPES = ['AddBoost', 'RemoveSetback', 'UpgradeDifficulty', 'DowngradeDifficulty'] as const
+const POOL_MODIFIER_TYPES = [
+  'AddBoost',
+  'RemoveBoost',
+  'AddSetback',
+  'RemoveSetback',
+  'UpgradeDifficulty',
+  'DowngradeDifficulty',
+  'AddDifficulty',
+  'RemoveDifficulty',
+] as const
 const RESULT_MODIFIER_TYPES = ['AddSuccess', 'AddFailure', 'AddAdvantage', 'AddThreat', 'AddTriumph', 'AddDespair'] as const
 
 // The statModifiers dropdown offers every DerivedStatBonuses key plus
@@ -263,9 +272,10 @@ function StatModifierEditor({ rows, onChange }: { rows: StatModifierRow[]; onCha
 }
 
 // Shared editor for poolModifiers/resultModifiers — identical shape
-// apart from which type enum populates the dropdown. Both stay entirely
-// hidden until VISIBLE_ITEM_FIELDS turns them on (no dice roller exists
-// yet to consume them), so this only ever renders once that's true.
+// apart from which type enum populates the dropdown. Gated by
+// VISIBLE_ITEM_FIELDS same as everything else in this form; the dice
+// roller now actually consumes both of these, so this isn't a
+// placeholder waiting on that anymore.
 // Turns a PascalCase enum value into readable spaced words for display —
 // "AddBoost" -> "Add Boost". The stored value stays the raw enum
 // (that's what the schema expects); this only affects what's shown.
@@ -445,6 +455,11 @@ export default function CustomItemForm({
 
   function handleSubmit() {
     if (!f.name.trim()) return
+    // A Weapon with no slots selected can never be equipped at all —
+    // Equip wouldn't even have anywhere to put it. Blocked here rather
+    // than just relying on the Create button's disabled state, in case
+    // anything else ever calls this directly.
+    if (f.type === 'Weapon' && f.slots.length === 0) return
 
     const payload: Omit<ObjectDoc, 'id' | 'sessionId' | 'ownerId'> = {
       name: f.name.trim(),
@@ -673,6 +688,9 @@ export default function CustomItemForm({
                 </label>
               ))}
             </div>
+            {f.slots.length === 0 && (
+              <p className="mt-1 text-xs text-warning">Select at least one slot — Create is disabled until you do.</p>
+            )}
             {f.slots.length > 1 && (
               <div className="mt-2">
                 <p className={labelCls}>Both slots checked — how does equipping this work?</p>
@@ -735,9 +753,9 @@ export default function CustomItemForm({
                   className={inputCls}
                 >
                   <option value="">None</option>
-                  <option value="Metalworking">Metalworking</option>
-                  <option value="Leatherworking">Leatherworking</option>
-                  <option value="Crafting">Crafting</option>
+                  <option value="Fabrication">Fabrication</option>
+                  <option value="Fine Crafting">Fine Crafting</option>
+                  <option value="Compounding">Compounding</option>
                 </select>
               </label>
             )}
@@ -767,9 +785,9 @@ export default function CustomItemForm({
                   className={inputCls}
                 >
                   <option value="">None</option>
-                  <option value="Metalworking">Metalworking</option>
-                  <option value="Leatherworking">Leatherworking</option>
-                  <option value="Crafting">Crafting</option>
+                  <option value="Fabrication">Fabrication</option>
+                  <option value="Fine Crafting">Fine Crafting</option>
+                  <option value="Compounding">Compounding</option>
                 </select>
               </label>
             )}
@@ -905,7 +923,7 @@ export default function CustomItemForm({
       <div className="mt-4 flex gap-2">
         <button
           onClick={handleSubmit}
-          disabled={!f.name.trim()}
+          disabled={!f.name.trim() || (f.type === 'Weapon' && f.slots.length === 0)}
           className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg hover:bg-accent-hover disabled:bg-disabled disabled:text-disabled-fg"
         >
           Create and Add

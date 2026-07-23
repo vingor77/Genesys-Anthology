@@ -26,7 +26,10 @@ export interface SkillDoc {
   id: string
   name: string
   characteristic: keyof Characteristics
+  category: 'Combat' | 'Social' | 'Knowledge' | 'General'
   description: string
+  usageGuidance?: string
+  gameOverrides?: { [gameId: string]: { description?: string; usageGuidance?: string } }
 }
 
 export interface TalentDoc {
@@ -38,9 +41,44 @@ export interface TalentDoc {
   limit: 'None' | 'Per Round' | 'Per Encounter' | 'Per Session'
   rules: string
   prerequisite?: string
-  statModifiers?: { stat: string; amount: number }[]
+  // stat left optional (unlike Object/Quality's statModifiers) — Dedication
+  // needs it substituted from characteristicChoice at apply time, same
+  // general rule as poolModifiers/resultModifiers' appliesTo below.
+  statModifiers?: { stat?: string; amount: number; autoApply: boolean }[]
+  poolModifiers?: {
+    type: string
+    amount: number
+    appliesTo?: string
+    autoApply: boolean
+    scalesWithRank?: boolean
+    costsStrainEqualToAmount?: boolean
+    addsThreatEqualToAmount?: boolean
+  }[]
+  resultModifiers?: {
+    type: string
+    amount: number
+    appliesTo?: string
+    autoApply: boolean
+    scalesWithRank?: boolean
+    costsStrainEqualToAmount?: boolean
+    addsThreatEqualToAmount?: boolean
+  }[]
+  scalingBonus?: { stat?: string; appliesTo: string }
   skillChoice?: { count: number; restriction?: string; grantsCareer?: boolean; fixedSkills?: string[] }
   characteristicChoice?: { count: number }
+  usesPerPeriod?: number
+  criticalInjuryRollModifier?: number
+  scalesWithRank?: boolean
+  halvesDamage?: boolean
+  reducesPrepareBy?: number
+  manualHeal?: { stat: 'wounds' | 'strain'; amount: number }
+  requiresActiveEncounter?: boolean
+  usesStoryPoint?: boolean
+  strainCost?: number
+  manualStrainSpend?: boolean
+  extendsRange?: boolean
+  extendsRangeRequires?: 'thrown' | 'nonThrown'
+  appliesStatusId?: string
 }
 
 export interface QualityDoc {
@@ -50,15 +88,24 @@ export interface QualityDoc {
   activation: 'Passive' | 'Active'
   rules: string
   statModifiers?: { stat: string; amount: number }[]
-  poolModifiers?: { type: string; amount: number; appliesTo: string }[]
-  resultModifiers?: { type: string; amount: number; appliesTo: string }[]
-  requirement?: { characteristic: string; penalty: string }
+  poolModifiers?: { type: string; amount: number; appliesTo?: string; autoApply: boolean }[]
+  resultModifiers?: { type: string; amount: number; appliesTo?: string; autoApply: boolean }[]
+  // penaltyPerPoint replaces a free-text `penalty: string` — structured so
+  // future code can actually compute "how many points short, upgrade that
+  // many times" instead of just displaying descriptive text. The threshold
+  // itself isn't stored here — it's this specific item's own rank for this
+  // quality (Object.qualities[].rank), same quality shared by many items.
+  requirement?: { characteristic: string; penaltyPerPoint: { type: string; amount: number } }
   immunity?: string[]
   autoFire?: boolean
   guided?: boolean
   requiresAmmo?: boolean
   slowFiring?: boolean
   destroysOnUse?: boolean // Fragile — item's InventoryEntry gets marked destroyed after one use, not deleted
+  momentumDamage?: boolean // Momentum — displayed damage includes +ceil(Brawn/2), computed fresh from wielder's current Brawn
+  autoUnequipOnAttack?: boolean // Improvised — attacking with this weapon unequips it afterward
+  appliesStatusId?: string // references a statusPresets document — first use of this pattern outside Critical Injuries
+  overrides?: { remainingRounds?: number | 'rank' } // patch applied to the referenced preset — "rank" substitutes this item's own quality rank
 }
 
 export interface CriticalInjuryDoc {
@@ -69,7 +116,72 @@ export interface CriticalInjuryDoc {
   severity: 'Easy' | 'Average' | 'Hard' | 'Daunting'
   effect: string
   isAltering: boolean
-  rollResults?: { max: number; outcomes: { min: number; max: number; result: string }[] }
+  instantEffect?: {
+    stat: 'wounds' | 'strain' | 'brawn' | 'agility' | 'intellect' | 'cunning' | 'presence' | 'willpower'
+    amount: number
+  }
+  forcesLastSlot?: boolean
+  forcesUnequip?: boolean
+  pendingPoolModifier?: { type: string; amount: number }
+  appliesStatusId?: string
+  rollResults?: {
+    max: number
+    outcomes: {
+      min: number
+      max: number
+      result: string
+      statusPresetId?: string
+      overrides?: { statModifiers?: { stat: string; amount: number }[] }
+      instantEffect?: { stat: string; amount: number }
+    }[]
+  }
+}
+
+// Deliberately keeps mechanical fields directly on the document rather
+// than routing through appliesStatusId/Status Presets — unlike Critical
+// Injuries, a keyword's mechanical data has exactly one owner (itself,
+// never reused across multiple different keywords), and Rule 1k already
+// prevents duplicate application, so the extra indirection wouldn't earn
+// its cost here.
+export interface KeywordDoc {
+  id: string
+  name: string
+  polarity: 'negative' | 'positive'
+  rules: string
+  poolModifiers?: { type: string; amount: number; appliesTo?: string; scalesWithStacks?: boolean }[]
+  perTurnEffect?: { wounds?: number; strain?: number; sanity?: number }
+  tickTiming?: 'start' | 'end'
+  blocksNaturalRecovery?: ('wounds' | 'strain')[]
+  stackable?: boolean
+  isCondition?: boolean
+  criticalInjuryRollModifier?: number
+  suppressesInjuryEffects?: boolean
+}
+
+// Deliberately separate from Keywords — unscoped by game or polarity,
+// referenced by anything that creates a Status by id (Critical Injuries'
+// appliesStatusId, Qualities' appliesStatusId, both from this session).
+// Field shape mirrors StatusEntry's own mechanical fields, minus the
+// fields that only make sense on a specific character's own copy
+// (sourceItemId/sourceTalentId/sourceInjuryId, stacks).
+export interface StatusPresetDoc {
+  id: string
+  label: string
+  description?: string
+  statModifiers?: { stat: string; amount: number }[]
+  poolModifiers?: { type: string; amount: number; appliesTo?: string; scalesWithStacks?: boolean }[]
+  resultModifiers?: { type: string; amount: number; appliesTo?: string }[]
+  perTurnEffect?: { wounds?: number; strain?: number; sanity?: number }
+  tickTiming?: 'start' | 'end'
+  remainingRounds?: number
+  blocksNaturalRecovery?: ('wounds' | 'strain')[]
+  suppressesInjuryEffects?: boolean
+  criticalInjuryRollModifier?: number
+  removedOnEncounterEnd?: boolean
+  blocksSkillIds?: string[]
+  onRemoveEffect?: { stat: 'wounds' | 'strain'; amount: number }
+  stackable?: boolean
+  isCondition?: boolean
 }
 
 export interface ObjectDoc {
@@ -114,7 +226,7 @@ export interface ObjectDoc {
   // a single-use flare. Undefined/false = restorable (the common case).
   usesCannotRestore?: boolean
   repair_material?: string
-  craft_skill?: 'Metalworking' | 'Leatherworking' | 'Crafting'
+  craft_skill?: 'Fabrication' | 'Fine Crafting' | 'Compounding'
   damage?: number
   damageType?: 'Brawn-based' | 'Fixed'
   crit?: number
@@ -159,6 +271,17 @@ export interface TalentEntry {
   tier: 1 | 2 | 3 | 4 | 5 // escalated tier this purchase occupies — climbs on repeat purchases of ranked talents
   skillChoices?: string[]
   characteristicChoices?: string[]
+  // Current uses left this period, for a talent whose limit isn't None.
+  // Starts at usesPerPeriod, decremented by a manual Use button. Reset
+  // behavior depends on limit: Per Encounter ties to the (not yet built)
+  // tracker's End Encounter action; Per Session is fully manual, no
+  // single detectable trigger exists for "session ended."
+  usesRemaining?: number
+  // Manual toggle for a talent's own autoApply:false poolModifiers/
+  // resultModifiers (Duelist, Quick Strike) — same pattern as
+  // InventoryEntry.applied, since talents needed the identical "player
+  // switches this on for now" mechanic and had no equivalent field.
+  applied?: boolean
 }
 
 // Only ever holds entries the player has actively created — either by
@@ -175,35 +298,60 @@ export interface StatusEntry {
   description?: string // narrative/rules text — always shown regardless of what mechanical fields are set
   sourceItemId?: string
   sourceTalentId?: string
-  diceModifier?: {
-    mode: 'addBoost' | 'addSetback' | 'upgradeDifficulty' | 'downgradeDifficulty'
+  // References criticalInjuries[].id (the per-occurrence instance UUID,
+  // never the shared injuryId — a character can have two occurrences of
+  // the same injury type at once). When that criticalInjuries[] entry is
+  // removed, any status whose sourceInjuryId matches it is removed too.
+  sourceInjuryId?: string
+  // Unified from an earlier statBonus/characteristicModifiers split —
+  // one array covering both the five derived stats and the six
+  // characteristics, same shape Object/Talent already use. stat left
+  // optional for the same substitution-rule reason Talent's does.
+  statModifiers?: { stat?: string; amount: number }[]
+  // Renamed from diceModifier for naming consistency with everywhere
+  // else this field appears. No autoApply — a Status entry being present
+  // on the sheet at all already means it's active.
+  poolModifiers?: {
+    type: string
     amount: number
-    appliesTo: string
+    appliesTo?: string
+    scalesWithStacks?: boolean
   }[]
-  statBonus?: {
-    soak?: number
-    meleeDefense?: number
-    rangedDefense?: number
-    woundThreshold?: number
-    strainThreshold?: number
-  }
-  // Temporary characteristic modifiers — distinct from XP-purchased
-  // characteristic increases. A status can push a characteristic below
-  // its normal starting-value floor (that floor only applies to
-  // permanent XP spend); this is a separate overlay computed on top of
-  // the base value, never written into characteristics itself.
-  characteristicModifiers?: {
-    brawn?: number
-    agility?: number
-    intellect?: number
-    cunning?: number
-    willpower?: number
-    presence?: number
-  }
-  perTurnEffect?: { wounds?: number; strain?: number }
+  // Added after Berserk (a Keyword) turned out to need it — the original
+  // design note said nothing built against this schema needed a
+  // result-modifier-style Status effect; Berserk was the first real case
+  // that contradicted that.
+  resultModifiers?: { type: string; amount: number; appliesTo?: string }[]
+  perTurnEffect?: { wounds?: number; strain?: number; sanity?: number }
+  // Governs both perTurnEffect and remainingRounds together, at the same
+  // moment — Burn ties damage+decrement to turn start; Stunned's
+  // Staggered ties duration-end to turn end. Not two independent knobs.
+  tickTiming?: 'start' | 'end'
   remainingRounds?: number
+  // True if this status is removed the instant the (not yet built) End
+  // Encounter action fires, regardless of remainingRounds — a genuinely
+  // different duration type (encounter-boundary-based, not round-based).
+  // Used by Berserk.
+  removedOnEncounterEnd?: boolean
   incomingDamageModifier?: { wounds?: number; strain?: number }
   blocksNaturalRecovery?: ('wounds' | 'strain')[]
+  // Specific skill ids whose Roll/Roll Attack button is hidden while this
+  // status is active — deliberately not scoped by category, since
+  // Berserk needs to block all four Ranged-family skills specifically
+  // while leaving Melee/Brawl untouched.
+  blocksSkillIds?: string[]
+  // The mirror of instantEffect — fires the instant this status is
+  // removed (any cause), rather than the instant it's created. Berserk:
+  // 6 strain the moment it ends.
+  onRemoveEffect?: { stat: 'wounds' | 'strain'; amount: number }
+  // Added directly to any future Critical Injury roll while active.
+  // Used by Necrosis.
+  criticalInjuryRollModifier?: number
+  // While active, ignores all effects sourced from currently-active
+  // Critical Injuries (any status with sourceInjuryId set, any still-
+  // pending pendingPoolModifier/forcesLastSlot on an active injury).
+  // Used by Adrenaline.
+  suppressesInjuryEffects?: boolean
   stacks?: number
   isCondition?: boolean
   // When true, Remove requires an explicit second confirmation rather than
@@ -256,6 +404,12 @@ export interface CriticalInjuryEntry {
   randomResult?: string
   critContribution: number // default 10
   notes?: string
+  // Tracks whether this injury's forcesLastSlot or pendingPoolModifier has
+  // already fired once. Both are one-time effects meant to apply to the
+  // very next relevant thing (next turn's initiative slot, next skill
+  // check) and then stop — without this flag, they'd silently reapply
+  // forever until the injury is healed instead of firing exactly once.
+  oneTimeEffectConsumed?: boolean
 }
 
 export interface ActiveSickness {
@@ -313,6 +467,14 @@ export interface Character {
 
   // Experience (spentXP/availableXP calculated at runtime)
   totalXP: number
+  // XP permanently forfeited by a permanent characteristic reduction
+  // (Gruesome Injury) — without this, lowering the live characteristic
+  // value alone would make totalSpentXP look smaller than it really is,
+  // silently freeing XP to buy the same rank right back with nothing
+  // actually lost. Subtracted alongside spentXP wherever available XP
+  // is calculated. Defaults to 0 for characters that have never had a
+  // permanent reduction.
+  permanentXPLoss?: number
 
   // Sub-schemas
   characteristics: Characteristics
@@ -361,7 +523,6 @@ export async function createCharacter(
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   })
-  localStorage.setItem("tempCharID", ref.id);
   return ref.id
 }
 
@@ -428,6 +589,8 @@ let skillsCache: SkillDoc[] | null = null
 let talentsCache: TalentDoc[] | null = null
 let qualitiesCache: QualityDoc[] | null = null
 let criticalInjuriesCache: CriticalInjuryDoc[] | null = null
+let keywordsCache: KeywordDoc[] | null = null
+let statusPresetsCache: StatusPresetDoc[] | null = null
 let objectsCache: ObjectDoc[] | null = null
 const objectCache = new Map<string, ObjectDoc>()
 
@@ -457,6 +620,20 @@ export async function fetchCriticalInjuries(): Promise<CriticalInjuryDoc[]> {
   const snap = await getDocs(collection(db, 'criticalInjuries'))
   criticalInjuriesCache = snap.docs.map((d) => ({ id: d.id, ...d.data() } as CriticalInjuryDoc))
   return criticalInjuriesCache
+}
+
+export async function fetchKeywords(): Promise<KeywordDoc[]> {
+  if (keywordsCache) return keywordsCache
+  const snap = await getDocs(collection(db, 'keywords'))
+  keywordsCache = snap.docs.map((d) => ({ id: d.id, ...d.data() } as KeywordDoc))
+  return keywordsCache
+}
+
+export async function fetchStatusPresets(): Promise<StatusPresetDoc[]> {
+  if (statusPresetsCache) return statusPresetsCache
+  const snap = await getDocs(collection(db, 'statusPresets'))
+  statusPresetsCache = snap.docs.map((d) => ({ id: d.id, ...d.data() } as StatusPresetDoc))
+  return statusPresetsCache
 }
 
 // Fetches the full object catalog (global items plus any session-scoped

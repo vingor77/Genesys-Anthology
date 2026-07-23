@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { BBB_WEAPON_IDS, BBB_ARMOR_IDS, BBB_MAX_STARTING_WEAPON_DAMAGE } from '../../lib/gameConfigs/bbb'
+import { BBB_WEAPON_IDS, BBB_ARMOR_IDS } from '../../lib/gameConfigs/bbb'
 import type { ObjectDoc } from '../../lib/characters'
 import type { StepProps } from '../../pages/CreateCharacter'
 
@@ -11,9 +11,7 @@ export default function StepInventory({ draft, updateDraft, setCanProceed, objec
     setCanProceed(!!draft.weaponObjectId && !!draft.armorObjectId)
   }, [draft.weaponObjectId, draft.armorObjectId, setCanProceed])
 
-  const weapons = objectDocs.filter(
-    (o) => BBB_WEAPON_IDS.includes(o.id) && (o.damage ?? 0) <= BBB_MAX_STARTING_WEAPON_DAMAGE
-  )
+  const weapons = objectDocs.filter((o) => BBB_WEAPON_IDS.includes(o.id))
   const armors = objectDocs.filter((o) => BBB_ARMOR_IDS.includes(o.id))
 
   function qualityRules(name: string): string {
@@ -63,6 +61,14 @@ export default function StepInventory({ draft, updateDraft, setCanProceed, objec
               ))}
             </div>
           </div>
+        )}
+
+        {w.slots && w.slots.length > 1 && (
+          <p className="mt-3 text-xs font-medium text-warning">
+            {w.slotMode === 'all'
+              ? `Two-handed — occupies both ${w.slots.join(' and ')}.`
+              : `Can be wielded in either ${w.slots.join(' or ')}.`}
+          </p>
         )}
 
         {w.situational && (

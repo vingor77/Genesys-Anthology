@@ -8,6 +8,7 @@ import {
   fetchQualities,
   fetchObjects,
   fetchCriticalInjuries,
+  fetchStatusPresets,
   fetchUserDisplayName,
   updateCharacter,
   createCustomObject,
@@ -17,6 +18,7 @@ import {
   type QualityDoc,
   type ObjectDoc,
   type CriticalInjuryDoc,
+  type StatusPresetDoc,
   type EquippedSlots,
 } from '../lib/characters'
 import {
@@ -25,6 +27,7 @@ import {
   computeEquippedStatBonuses,
   computeInventoryStatBonuses,
   computeInventoryCharacteristicBonuses,
+  computeTalentCharacteristicBonuses,
   computeCareerSkills,
   computeEncumbrance,
   encumbranceCapacity,
@@ -54,9 +57,19 @@ import {
   SKILL_CATEGORY_ORDER,
 } from '../lib/gameConfigs/bbb'
 import { DicePool, DifficultyDie } from '../icons/DiceIcons'
+import {
+  mergePoolModifier,
+  mergeResultModifier,
+  type AppliedModifiers,
+  type AppliedResultModifiers,
+  type ManualToggleOption,
+  type DicePoolCounts,
+  type RolledDie,
+  type RollResult,
+} from '../lib/genesysDice'
 import StepTalents from '../components/characterCreator/StepTalents'
 import CustomItemForm from '../components/sheet/CustomItemForm'
-import type { InventoryEntry, StatusEntry, CriticalInjuryEntry } from '../lib/characters'
+import type { TalentEntry, InventoryEntry, StatusEntry, CriticalInjuryEntry } from '../lib/characters'
 
 // Genesys standard living-character skill cap — distinct from chargen's
 // lower cap (2), which only applied during the wizard.
@@ -81,59 +94,37 @@ const CRIT_SEVERITY_DICE: Record<string, number> = {
 
 const TIERS: (1 | 2 | 3 | 4 | 5)[] = [1, 2, 3, 4, 5]
 
-// The 5 qualities that actually create a lingering Status entry (Burn,
-// Concussive, Disorient, Ensnare, Knockdown) — everything else is either
-// a passive item property or an instant one-time effect with nothing to
-// track afterward. Labels use the condition name ("Prone"), not the
-// quality name ("Knockdown") — reads more naturally on the sheet. These
-// are starting defaults only; the actual magnitude depends on what rank
-// hit the character, so every field stays editable after picking one.
-const STATUS_QUICK_FILL: Record<string, Partial<StatusEntry>> = {
-  Burning: {
-    label: 'Burning',
-    description: 'On fire. Deals damage again each round until it burns out or is treated.',
-    perTurnEffect: { wounds: 1 },
-    remainingRounds: 1,
-  },
-  Staggered: {
-    label: 'Staggered',
-    description: 'Rattled badly enough to lose the next few actions.',
-    isCondition: true,
-  },
-  Disoriented: {
-    label: 'Disoriented',
-    description: 'Rattled, making the next actions clumsier.',
-    diceModifier: [{ mode: 'upgradeDifficulty', amount: 1, appliesTo: 'combat checks' }],
-  },
-  Immobilized: {
-    label: 'Immobilized',
-    description: 'Trapped in place until able to break free.',
-    isCondition: true,
-  },
-  Prone: {
-    label: 'Prone',
-    description: 'Knocked off their feet.',
-    isCondition: true,
-  },
+// Real Firestore-backed statusPresetDocs replaces what used to be a
+// hardcoded, incomplete local list here — one source of truth for
+// preset statuses instead of two that could quietly drift apart.
+
+const POOL_MODIFIER_LABELS: Record<string, string> = {
+  AddBoost: 'Add Boost',
+  RemoveBoost: 'Remove Boost',
+  AddSetback: 'Add Setback',
+  RemoveSetback: 'Remove Setback',
+  UpgradeDifficulty: 'Upgrade Difficulty',
+  DowngradeDifficulty: 'Downgrade Difficulty',
 }
 
-const DICE_MODIFIER_LABELS: Record<string, string> = {
-  addBoost: 'Add Boost',
-  addSetback: 'Add Setback',
-  upgradeDifficulty: 'Upgrade Difficulty',
-  downgradeDifficulty: 'Downgrade Difficulty',
+const RESULT_MODIFIER_LABELS: Record<string, string> = {
+  AddSuccess: 'Add Success',
+  AddFailure: 'Add Failure',
+  AddAdvantage: 'Add Advantage',
+  AddThreat: 'Add Threat',
+  AddTriumph: 'Add Triumph',
+  AddDespair: 'Add Despair',
 }
 
 function blankStatusForm(): Omit<StatusEntry, 'id'> {
   return {
     label: '',
     description: '',
-    diceModifier: [],
-    statBonus: {},
-    characteristicModifiers: {},
+    statModifiers: [],
+    poolModifiers: [],
+    resultModifiers: [],
     perTurnEffect: {},
     remainingRounds: undefined,
-    incomingDamageModifier: {},
     blocksNaturalRecovery: [],
     stacks: undefined,
     isCondition: false,
@@ -165,6 +156,8 @@ const CHARACTERISTIC_ORDER: { key: keyof Characteristics; label: string }[] = [
 // Single shared display for an item's full details — used by both the
 // main Inventory panel and the Add Item preview modal. Previously these
 // were two separately-maintained blocks of near-identical JSX, which is
+const RANGE_ORDER = ['Engaged', 'Short', 'Medium', 'Long', 'Extreme'] as const
+
 // exactly how the "Add Item preview is missing weapon stats" bug
 // happened — they'd quietly drifted apart. One component now, used in
 // both places, so that can't happen again.
@@ -173,15 +166,46 @@ function ItemDetail({
   entry,
   qualityDocs,
   skillDocs,
+  talentDocs,
+  characterTalents,
+  brawn,
 }: {
   doc: ObjectDoc
   entry?: InventoryEntry
   qualityDocs: QualityDoc[]
   skillDocs: SkillDoc[]
+  talentDocs: TalentDoc[]
+  characterTalents: TalentEntry[]
+  brawn: number
 }) {
   const combinedEffect = [doc.effect, doc.bonus_effects].filter(Boolean).join(' ')
   const usesValue = entry?.currentUses ?? doc.uses
   const durabilityValue = entry?.currentDurability ?? doc.durability
+
+  // Momentum's damage bonus — half the wielder's Brawn, rounded up,
+  // computed fresh from their current Brawn rather than stored as a
+  // static number, per momentumDamage's own definition.
+  const hasMomentumDamage = (doc.qualities ?? []).some(
+    (q) => qualityDocs.find((qd) => qd.name === q.name)?.momentumDamage
+  )
+  const momentumBonus = hasMomentumDamage ? Math.ceil(brawn / 2) : 0
+
+  // Eagle Eyes/Good Arm — both Passive, always in effect (no toggle),
+  // scoped by whether this weapon carries Momentum (the canonical "is
+  // this thrown" signal) via extendsRangeRequires.
+  const isThrown = (doc.qualities ?? []).some((q) => q.name === 'Momentum')
+  const ownsExtendsRangeTalent = characterTalents.some((t) => {
+    const talentDoc = talentDocs.find((td) => td.id === t.id)
+    if (!talentDoc?.extendsRange) return false
+    if (talentDoc.extendsRangeRequires === 'thrown') return isThrown
+    if (talentDoc.extendsRangeRequires === 'nonThrown') return !isThrown
+    return true
+  })
+  const displayedRange =
+    doc.type === 'Weapon' && doc.range && ownsExtendsRangeTalent
+      ? RANGE_ORDER[Math.min(RANGE_ORDER.length - 1, RANGE_ORDER.indexOf(doc.range) + 1)]
+      : doc.range
+
   const durabilityState =
     (doc.type === 'Weapon' || doc.type === 'Armor') && durabilityValue !== undefined
       ? getDurabilityState(durabilityValue, doc.type)
@@ -205,7 +229,7 @@ function ItemDetail({
     { label: 'Price', value: String(doc.price ?? 0) },
   ]
   if (doc.slots && doc.slots.length > 0) secondary.push({ label: 'Slots', value: doc.slots.join(', ') })
-  if (doc.type === 'Weapon' && doc.range) secondary.push({ label: 'Range', value: doc.range })
+  if (doc.type === 'Weapon' && displayedRange) secondary.push({ label: 'Range', value: displayedRange })
   if (doc.type === 'Weapon' && doc.skill) {
     secondary.push({ label: 'Skill', value: skillDocs.find((s) => s.id === doc.skill)?.name ?? doc.skill })
   }
@@ -219,8 +243,27 @@ function ItemDetail({
   if (VISIBLE_ITEM_FIELDS.repairMaterials && (doc.type === 'Weapon' || doc.type === 'Armor') && doc.repair_material) {
     secondary.push({ label: 'Repair material', value: doc.repair_material })
   }
-  if (VISIBLE_ITEM_FIELDS.craftSkill && (doc.type === 'Weapon' || doc.type === 'Armor') && doc.craft_skill) {
+  if (VISIBLE_ITEM_FIELDS.craftSkill && doc.craft_skill) {
     secondary.push({ label: 'Craft skill', value: doc.craft_skill })
+  }
+  if (VISIBLE_ITEM_FIELDS.craftingMaterial && doc.is_crafting_material) {
+    secondary.push({ label: 'Crafting material', value: 'Yes' })
+  }
+  if (doc.poolModifiers && doc.poolModifiers.length > 0) {
+    secondary.push({
+      label: 'Pool',
+      value: doc.poolModifiers
+        .map((m) => `${POOL_MODIFIER_LABELS[m.type] ?? m.type} ${m.amount}${m.appliesTo ? ` (${m.appliesTo})` : ''}${m.autoApply ? '' : ' [manual]'}`)
+        .join(', '),
+    })
+  }
+  if (doc.resultModifiers && doc.resultModifiers.length > 0) {
+    secondary.push({
+      label: 'Result',
+      value: doc.resultModifiers
+        .map((m) => `${RESULT_MODIFIER_LABELS[m.type] ?? m.type} ${m.amount}${m.appliesTo ? ` (${m.appliesTo})` : ''}${m.autoApply ? '' : ' [manual]'}`)
+        .join(', '),
+    })
   }
   if (VISIBLE_ITEM_FIELDS.lightSourceDetails && doc.type === 'Light Source') {
     if (doc.light_step_boost !== undefined) secondary.push({ label: 'Light boost', value: String(doc.light_step_boost) })
@@ -286,7 +329,11 @@ function ItemDetail({
               <div className="rounded-lg px-3 py-1.5 text-center" style={{ background: 'rgba(192,69,61,0.14)' }}>
                 <p className="text-xs" style={{ color: '#C0453D' }}>Damage</p>
                 <p className="text-base font-semibold" style={{ color: '#DD7A72' }}>
-                  {doc.damageType === 'Brawn-based' ? `Brawn + ${doc.damage}` : doc.damage}
+                  {doc.damageType === 'Brawn-based'
+                    ? `Brawn + ${doc.damage}`
+                    : momentumBonus > 0
+                      ? `${doc.damage} + ${momentumBonus}`
+                      : doc.damage}
                 </p>
               </div>
               <div className="rounded-lg px-3 py-1.5 text-center" style={{ background: 'rgba(123,94,168,0.14)' }}>
@@ -417,7 +464,31 @@ function SheetSection({
   )
 }
 
-export default function CharacterSheet() {
+// onRoll is optional and undefined by default — the standalone sheet
+// route never passes it, so no Roll buttons render there at all. Only
+// the future Play page (which embeds this same component) provides it,
+// turning the same skill/weapon UI into a click-to-roll trigger without
+// needing a second, duplicated rendering of the skill/weapon lists.
+export default function CharacterSheet({
+  onRoll,
+  encounterActive = false,
+}: {
+  onRoll?: (
+    pool: DicePoolCounts,
+    label: string,
+    characterName: string,
+    appliedModifiers?: AppliedModifiers,
+    appliedResultModifiers?: AppliedResultModifiers,
+    manualToggleOptions?: ManualToggleOption[],
+    onResolved?: (dice: RolledDie[], result: RollResult, strainSpent: number) => void
+  ) => void
+  // Whether an encounter is currently active, per the (separately owned)
+  // initiative tracker — needed for Berserk's requiresActiveEncounter
+  // gate. Defaults to false so the standalone /characters/:id sheet
+  // route (no tracker mounted at all) just always shows these Use
+  // buttons as disabled rather than crashing on a missing prop.
+  encounterActive?: boolean
+} = {}) {
   const { characterId } = useParams()
   const { user } = useAuth()
 
@@ -427,10 +498,12 @@ export default function CharacterSheet() {
   const [qualityDocs, setQualityDocs] = useState<QualityDoc[] | null>(null)
   const [objectDocs, setObjectDocs] = useState<ObjectDoc[] | null>(null)
   const [criticalInjuryDocs, setCriticalInjuryDocs] = useState<CriticalInjuryDoc[] | null>(null)
+  const [statusPresetDocs, setStatusPresetDocs] = useState<StatusPresetDoc[] | null>(null)
   const [playerDisplayName, setPlayerDisplayName] = useState<string | null>(null)
   const [editMode, setEditMode] = useState(false)
   const [showTalentModal, setShowTalentModal] = useState(false)
   const [viewingOwnedTalentId, setViewingOwnedTalentId] = useState<string | null>(null)
+  const [talentStrainSpendInput, setTalentStrainSpendInput] = useState(0)
   const [viewingInventoryIndex, setViewingInventoryIndex] = useState<number | null>(null)
   // slotMode 'any' with 2+ eligible slots — asks which one, no confirmation
   // needed since replacing a single occupied slot has always been silent.
@@ -473,6 +546,7 @@ export default function CharacterSheet() {
     fetchTalents().then(setTalentDocs)
     fetchQualities().then(setQualityDocs)
     fetchCriticalInjuries().then(setCriticalInjuryDocs)
+    fetchStatusPresets().then(setStatusPresetDocs)
   }, [])
 
   // Deliberately separate from the effect above — this one needs
@@ -494,7 +568,7 @@ export default function CharacterSheet() {
   if (character.gameType !== 'bbb') {
     return <p className="text-fg-secondary">The sheet for {character.gameType} isn't built yet — only BB&B is supported right now.</p>
   }
-  if (!skillDocs || !talentDocs || !qualityDocs || !objectDocs || !criticalInjuryDocs) {
+  if (!skillDocs || !talentDocs || !qualityDocs || !objectDocs || !criticalInjuryDocs || !statusPresetDocs) {
     return <p className="text-fg-secondary">Loading game data…</p>
   }
 
@@ -506,11 +580,20 @@ export default function CharacterSheet() {
   const equippedBonuses = computeEquippedStatBonuses(character.equippedSlots, character.inventory, objectMap, qualityDocs)
   const inventoryBonuses = computeInventoryStatBonuses(character.inventory, objectMap)
   const inventoryCharacteristicBonuses = computeInventoryCharacteristicBonuses(character.inventory, objectMap)
+  const talentCharacteristicBonuses = computeTalentCharacteristicBonuses(character.talents, talentDocs)
   const statusBonuses = computeStatusBonuses(character.status)
   const effectiveCharacteristics = computeEffectiveCharacteristics(
     character.characteristics,
     character.status,
-    inventoryCharacteristicBonuses
+    // Merge both overlay sources into one map before passing in — Dedication
+    // (talent) and an item like a ring of +1 Agility (inventory) both need
+    // to land here, and computeEffectiveCharacteristics only accepts one
+    // combined map, not a separate parameter per source.
+    Object.fromEntries(
+      (['brawn', 'agility', 'intellect', 'cunning', 'willpower', 'presence'] as const)
+        .map((key) => [key, (inventoryCharacteristicBonuses[key] ?? 0) + (talentCharacteristicBonuses[key] ?? 0)])
+        .filter(([, amount]) => amount !== 0)
+    )
   )
   const stats = derivedStats(effectiveCharacteristics, {
     soak: talentBonuses.soak + equippedBonuses.soak + inventoryBonuses.soak + statusBonuses.soak,
@@ -525,6 +608,386 @@ export default function CharacterSheet() {
   })
 
   const careerSkillNames = computeCareerSkills(career?.chosenSkills.pool ?? [], character.talents, talentDocs)
+
+  // appliesTo resolution, per the schema's own documented convention:
+  // an exact skill id, a characteristic name (checked against this
+  // skill's actual governing characteristic, including BBB's own
+  // override), or a skill category name. Absent appliesTo means unscoped
+  // — applies regardless of what's being rolled.
+  function poolModifierApplies(appliesTo: string | undefined, skillId: string, doc: SkillDoc): boolean {
+    if (!appliesTo) return true
+    if (appliesTo === skillId) return true
+    const characteristic = BBB_SKILL_CHARACTERISTIC_OVERRIDES[skillId] ?? doc.characteristic
+    if (appliesTo === characteristic) return true
+    if (appliesTo === doc.category) return true
+    return false
+  }
+
+  // Gathers every Add/RemoveBoost and Add/RemoveSetback modifier that
+  // should silently shape a pool before rolling — equipped items (their
+  // own direct poolModifiers, plus each carried quality's own, scaled by
+  // that specific item's own rank for a ranked quality like Accurate),
+  // owned talents (autoApply only — a manual-toggle talent poolModifier
+  // has no UI to turn on yet, so it's skipped rather than treated as
+  // silently always-on), and active statuses (always, since presence on
+  // the sheet already means active).
+  //
+  // UpgradeDifficulty/DowngradeDifficulty are deliberately NOT gathered
+  // here — there's no baseline difficulty in this pool to act on (that's
+  // set by the GM at the table, via the roller's own difficulty
+  // controls), so those stay a manual action in the roller itself rather
+  // than something this function could apply blindly.
+  function gatherPoolModifiers(
+    skillId: string,
+    weaponEntryId?: string
+  ): {
+    applied: AppliedModifiers
+    manualToggleOptions: ManualToggleOption[]
+    pendingInjuryIds: string[]
+  } {
+    const doc = skillDocs!.find((d) => d.id === skillId)
+    if (!doc) return { applied: {}, manualToggleOptions: [], pendingInjuryIds: [] }
+
+    let applied: AppliedModifiers = {}
+    const manualToggleOptions: ManualToggleOption[] = []
+    const pendingInjuryIds: string[] = []
+
+    function addAuto(type: string, amount: number, appliesTo: string | undefined) {
+      if (!poolModifierApplies(appliesTo, skillId, doc!)) return
+      applied = mergePoolModifier(applied, type, amount)
+    }
+    function addManualOption(
+      id: string,
+      label: string,
+      type: string,
+      amount: number,
+      appliesTo: string | undefined,
+      variableCost?: ManualToggleOption['variableCost']
+    ) {
+      if (!poolModifierApplies(appliesTo, skillId, doc!)) return
+      manualToggleOptions.push({ id, label, kind: 'pool', type, amount, variableCost })
+    }
+
+    // Slot-less items (a Mundane gadget like a charm bracelet) can never
+    // be "equipped" at all, so requiring equipped-status for them would
+    // mean their modifiers could never fire — they contribute from mere
+    // possession instead, matching how carried statModifiers items
+    // already work (computeInventoryStatBonuses doesn't require
+    // equipping either). Slotted items still require being equipped.
+    //
+    // For an equipped WEAPON specifically, its own direct poolModifiers
+    // still apply broadly (a passive aura, say), but its QUALITIES'
+    // poolModifiers only apply when weaponEntryId matches — Accurate is
+    // "this weapon's own attacks get a Boost," not "any check while this
+    // weapon happens to be equipped." Non-weapon slotted items (Armor)
+    // don't have this restriction; their qualities apply broadly, same
+    // as before (Reinforced isn't scoped to a specific attack).
+    const equippedIds = new Set(Object.values(character!.equippedSlots).filter((v): v is string => v !== null))
+    for (const entry of character!.inventory) {
+      if (entry.destroyed) continue
+      const objDoc = objectMap.get(entry.objectId)
+      if (!objDoc) continue
+
+      const isSlotless = !objDoc.slots || objDoc.slots.length === 0
+      const isEquipped = equippedIds.has(entry.id)
+      if (!isSlotless && !isEquipped) continue
+
+      objDoc.poolModifiers?.forEach((m, i) => {
+        if (m.autoApply) addAuto(m.type, m.amount, m.appliesTo)
+        else addManualOption(`item:${entry.id}:pool:${i}`, `${objDoc.name}: ${POOL_MODIFIER_LABELS[m.type] ?? m.type} ${m.amount}`, m.type, m.amount, m.appliesTo)
+      })
+
+      const qualitiesAreWeaponScoped = objDoc.type === 'Weapon'
+      if (qualitiesAreWeaponScoped && entry.id !== weaponEntryId) continue
+      for (const q of objDoc.qualities ?? []) {
+        const qualityDoc = qualityDocs!.find((qd) => qd.name === q.name)
+        qualityDoc?.poolModifiers?.forEach((m, i) => {
+          const amount = qualityDoc.ranked ? m.amount * (q.rank ?? 1) : m.amount
+          if (m.autoApply) addAuto(m.type, amount, m.appliesTo)
+          else addManualOption(`itemquality:${entry.id}:${q.name}:${i}`, `${q.name} (${objDoc.name}): ${POOL_MODIFIER_LABELS[m.type] ?? m.type} ${amount}`, m.type, amount, m.appliesTo)
+        })
+      }
+    }
+
+    // Cumbersome/Unwieldy — always applied when the deficiency exists,
+    // not a toggle at all (falling short of the requirement isn't
+    // optional). Still scoped to weaponEntryId, same reasoning as before
+    // — only relevant to a check made with this specific weapon.
+    if (weaponEntryId) {
+      const weaponEntry = character!.inventory.find((e) => e.id === weaponEntryId)
+      const weaponDoc = weaponEntry ? objectMap.get(weaponEntry.objectId) : undefined
+      for (const q of weaponDoc?.qualities ?? []) {
+        const qualityDoc = qualityDocs!.find((qd) => qd.name === q.name)
+        if (!qualityDoc?.requirement) continue
+        const { characteristic, penaltyPerPoint } = qualityDoc.requirement
+        const rating = q.rank ?? 1
+        const have = effectiveCharacteristics[characteristic as keyof Characteristics] ?? 0
+        const deficiency = Math.max(0, rating - have)
+        if (deficiency > 0) addAuto(penaltyPerPoint.type, penaltyPerPoint.amount * deficiency, undefined)
+      }
+    }
+
+    for (const t of character!.talents) {
+      const talentDoc = talentDocs!.find((td) => td.id === t.id)
+      talentDoc?.poolModifiers?.forEach((m, i) => {
+        const amount = m.scalesWithRank ? m.amount * t.rank : m.amount
+        if (m.autoApply) {
+          addAuto(m.type, amount, m.appliesTo)
+          return
+        }
+        const variableCost: ManualToggleOption['variableCost'] = m.costsStrainEqualToAmount
+          ? { resource: 'strain' }
+          : m.addsThreatEqualToAmount
+            ? { resource: 'threat' }
+            : undefined
+        const label = variableCost
+          ? `${talentDoc.name}: up to ${amount} ${POOL_MODIFIER_LABELS[m.type] ?? m.type} (costs equal ${variableCost.resource})`
+          : `${talentDoc.name}: ${POOL_MODIFIER_LABELS[m.type] ?? m.type} ${amount}`
+        addManualOption(`talent:${t.id}:${t.rank}:pool:${i}`, label, m.type, amount, m.appliesTo, variableCost)
+      })
+    }
+
+    // Active statuses — presence on the sheet already means active,
+    // never a toggle.
+    for (const s of character!.status) {
+      for (const m of s.poolModifiers ?? []) {
+        const amount = m.scalesWithStacks ? m.amount * (s.stacks ?? 1) : m.amount
+        addAuto(m.type, amount, m.appliesTo)
+      }
+    }
+
+    // Pending one-time Critical Injury effects (Stinger, Off-Balance) —
+    // deliberately unscoped, bypassing poolModifierApplies entirely,
+    // since "your next check" in the book's own text means literally any
+    // check, not one tied to a specific skill/characteristic/category.
+    // Only gathered while unconsumed; the caller marks pendingInjuryIds
+    // consumed once the roll this was gathered for actually resolves, so
+    // the effect fires exactly once rather than reapplying forever.
+    // Always applied — not a toggle, this is what actually happened.
+    for (const entry of character!.criticalInjuries) {
+      if (entry.oneTimeEffectConsumed) continue
+      const injuryDoc = criticalInjuryDocs!.find((d) => d.id === entry.injuryId)
+      if (!injuryDoc?.pendingPoolModifier) continue
+      const { type, amount } = injuryDoc.pendingPoolModifier
+      applied = mergePoolModifier(applied, type, amount)
+      pendingInjuryIds.push(entry.id)
+    }
+
+    return { applied, manualToggleOptions, pendingInjuryIds }
+  }
+
+  // Same characteristic-resolution logic the Skills section already
+  // computes inline per row — pulled out so the weapon Roll Attack
+  // button (a different part of the sheet) can compute the identical
+  // pool for a weapon's governing skill without duplicating it.
+  //
+  // Returns basePool (just ability/proficiency — the fixed starting
+  // point) and appliedModifiers (boost/setback/difficulty effects)
+  // SEPARATELY rather than baked into one static pool. This matters:
+  // the roller re-combines them fresh every time the player changes
+  // anything, so a persistent effect like Frazzled's "-999 boost" can't
+  // be undone by manually clicking +1 Boost afterward, the way baking
+  // everything into one pool up front would have allowed.
+  // Mirror of gatherPoolModifiers, but for resultModifiers (Superior's
+  // automatic Advantage, Inferior's automatic Threat, Berserk's
+  // automatic Success+Advantage) — these act on the ROLLED RESULT, a
+  // different pipeline stage than pool-building, so they're gathered and
+  // applied separately rather than folded into the same function. Only
+  // autoApply sources are gathered here, same reasoning as poolModifiers
+  // — a manual-toggle resultModifier has no UI to turn on yet.
+  function gatherResultModifiers(
+    skillId: string,
+    weaponEntryId?: string
+  ): { applied: AppliedResultModifiers; manualToggleOptions: ManualToggleOption[] } {
+    const doc = skillDocs!.find((d) => d.id === skillId)
+    if (!doc) return { applied: {}, manualToggleOptions: [] }
+
+    let applied: AppliedResultModifiers = {}
+    const manualToggleOptions: ManualToggleOption[] = []
+
+    function addAuto(type: string, amount: number, appliesTo: string | undefined) {
+      if (!poolModifierApplies(appliesTo, skillId, doc!)) return
+      applied = mergeResultModifier(applied, type, amount)
+    }
+    function addManualOption(
+      id: string,
+      label: string,
+      type: string,
+      amount: number,
+      appliesTo: string | undefined,
+      variableCost?: ManualToggleOption['variableCost']
+    ) {
+      if (!poolModifierApplies(appliesTo, skillId, doc!)) return
+      manualToggleOptions.push({ id, label, kind: 'result', type, amount, variableCost })
+    }
+
+    // Same reasoning as gatherPoolModifiers' version of this loop — see
+    // its comment for the full explanation. Slot-less items contribute
+    // regardless of equip state; equipped weapons' own qualities are
+    // scoped to weaponEntryId so Superior on a weapon only boosts checks
+    // made with that weapon, not every roll while it happens to be equipped.
+    const equippedIds = new Set(Object.values(character!.equippedSlots).filter((v): v is string => v !== null))
+    for (const entry of character!.inventory) {
+      if (entry.destroyed) continue
+      const objDoc = objectMap.get(entry.objectId)
+      if (!objDoc) continue
+
+      const isSlotless = !objDoc.slots || objDoc.slots.length === 0
+      const isEquipped = equippedIds.has(entry.id)
+      if (!isSlotless && !isEquipped) continue
+
+      objDoc.resultModifiers?.forEach((m, i) => {
+        if (m.autoApply) addAuto(m.type, m.amount, m.appliesTo)
+        else addManualOption(`item:${entry.id}:result:${i}`, `${objDoc.name}: ${RESULT_MODIFIER_LABELS[m.type] ?? m.type} ${m.amount}`, m.type, m.amount, m.appliesTo)
+      })
+
+      const qualitiesAreWeaponScoped = objDoc.type === 'Weapon'
+      if (qualitiesAreWeaponScoped && entry.id !== weaponEntryId) continue
+      for (const q of objDoc.qualities ?? []) {
+        const qualityDoc = qualityDocs!.find((qd) => qd.name === q.name)
+        qualityDoc?.resultModifiers?.forEach((m, i) => {
+          const amount = qualityDoc.ranked ? m.amount * (q.rank ?? 1) : m.amount
+          if (m.autoApply) addAuto(m.type, amount, m.appliesTo)
+          else addManualOption(`itemquality:${entry.id}:${q.name}:result:${i}`, `${q.name} (${objDoc.name}): ${RESULT_MODIFIER_LABELS[m.type] ?? m.type} ${amount}`, m.type, amount, m.appliesTo)
+        })
+      }
+    }
+
+    for (const t of character!.talents) {
+      const talentDoc = talentDocs!.find((td) => td.id === t.id)
+      talentDoc?.resultModifiers?.forEach((m, i) => {
+        const amount = m.scalesWithRank ? m.amount * t.rank : m.amount
+        if (m.autoApply) {
+          addAuto(m.type, amount, m.appliesTo)
+          return
+        }
+        const variableCost: ManualToggleOption['variableCost'] = m.costsStrainEqualToAmount
+          ? { resource: 'strain' }
+          : m.addsThreatEqualToAmount
+            ? { resource: 'threat' }
+            : undefined
+        const label = variableCost
+          ? `${talentDoc.name}: up to ${amount} ${RESULT_MODIFIER_LABELS[m.type] ?? m.type} (costs equal ${variableCost.resource})`
+          : `${talentDoc.name}: ${RESULT_MODIFIER_LABELS[m.type] ?? m.type} ${amount}`
+        addManualOption(`talent:${t.id}:${t.rank}:result:${i}`, label, m.type, amount, m.appliesTo, variableCost)
+      })
+    }
+
+    // Active statuses — presence on the sheet already means active,
+    // never a toggle.
+    for (const s of character!.status) {
+      for (const m of s.resultModifiers ?? []) {
+        addAuto(m.type, m.amount, m.appliesTo)
+      }
+    }
+
+    return { applied, manualToggleOptions }
+  }
+
+  function poolForSkill(
+    skillId: string,
+    weaponEntryId?: string
+  ): {
+    basePool: DicePoolCounts
+    appliedModifiers: AppliedModifiers
+    appliedResultModifiers: AppliedResultModifiers
+    manualToggleOptions: ManualToggleOption[]
+    pendingInjuryIds: string[]
+  } | null {
+    const doc = skillDocs!.find((d) => d.id === skillId)
+    if (!doc) return null
+    const rank = character!.skills.find((s) => s.name === skillId)?.rank ?? 0
+    const characteristic = (BBB_SKILL_CHARACTERISTIC_OVERRIDES[skillId] ?? doc.characteristic) as keyof Characteristics
+    const basePool = calculateDicePool(effectiveCharacteristics[characteristic], rank)
+    const poolResult = gatherPoolModifiers(skillId, weaponEntryId)
+    const resultResult = gatherResultModifiers(skillId, weaponEntryId)
+
+    return {
+      basePool,
+      appliedModifiers: poolResult.applied,
+      appliedResultModifiers: resultResult.applied,
+      manualToggleOptions: [...poolResult.manualToggleOptions, ...resultResult.manualToggleOptions],
+      pendingInjuryIds: poolResult.pendingInjuryIds,
+    }
+  }
+
+  // Marks any pending one-time Critical Injury effects (Stinger,
+  // Off-Balance) as consumed. Called from PlayPage once the roll this
+  // was gathered for actually resolves — passed along as part of what
+  // onRoll hands to the parent below, rather than firing the moment the
+  // roll button is clicked, so canceling out of the roller without
+  // actually rolling doesn't burn the effect for nothing.
+  function consumePendingInjuryEffects(pendingInjuryIds: string[]) {
+    if (pendingInjuryIds.length === 0) return
+    update({
+      criticalInjuries: character!.criticalInjuries.map((e) =>
+        pendingInjuryIds.includes(e.id) ? { ...e, oneTimeEffectConsumed: true } : e
+      ),
+    })
+  }
+
+  // The one "Use" handler for every talent with a manual mechanical
+  // effect — manualHeal, manualStrainSpend, or flat strainCost. Only one
+  // of those three is ever set on a given talent, so only one branch
+  // below actually does anything for any specific call; strainOverride
+  // is only meaningful for manualStrainSpend, where the amount is the
+  // player's own choice rather than fixed by the document.
+  function useTalentEntry(t: TalentEntry, doc: TalentDoc, strainOverride?: number) {
+    const updates: Partial<Character> = {}
+
+    if (doc.limit !== 'None') {
+      const maxUses = doc.usesPerPeriod ?? 1
+      const current = t.usesRemaining ?? maxUses
+      if (current <= 0) return
+      updates.talents = character!.talents.map((x) =>
+        x.id === t.id && x.rank === t.rank ? { ...x, usesRemaining: current - 1 } : x
+      )
+    }
+
+    if (doc.manualHeal) {
+      const amount = doc.scalesWithRank ? doc.manualHeal.amount * t.rank : doc.manualHeal.amount
+      if (doc.manualHeal.stat === 'wounds') {
+        updates.currentWounds = Math.max(0, character!.currentWounds - amount)
+      } else {
+        updates.currentStrain = Math.max(0, character!.currentStrain - amount)
+      }
+    } else if (doc.manualStrainSpend && strainOverride !== undefined) {
+      updates.currentStrain = Math.min(stats.strainThreshold, character!.currentStrain + strainOverride)
+    } else if (doc.strainCost) {
+      updates.currentStrain = Math.min(stats.strainThreshold, character!.currentStrain + doc.strainCost)
+    } else if (doc.appliesStatusId) {
+      // Creates a real Status from the referenced preset, same safe
+      // construction as Critical Injuries' version of this (only assign
+      // a key when the preset actually has a value — Firestore rejects
+      // the whole write if anything anywhere is literally undefined).
+      // sourceTalentId ties it to this talent rather than an injury.
+      const preset = statusPresetDocs!.find((p) => p.id === doc.appliesStatusId)
+      if (preset) {
+        const newStatus: StatusEntry = { id: crypto.randomUUID(), label: preset.label, sourceTalentId: t.id }
+        if (preset.statModifiers) newStatus.statModifiers = preset.statModifiers
+        if (preset.poolModifiers) newStatus.poolModifiers = preset.poolModifiers
+        if (preset.resultModifiers) newStatus.resultModifiers = preset.resultModifiers
+        if (preset.perTurnEffect) newStatus.perTurnEffect = preset.perTurnEffect
+        if (preset.tickTiming) newStatus.tickTiming = preset.tickTiming
+        if (preset.remainingRounds !== undefined) newStatus.remainingRounds = preset.remainingRounds
+        if (preset.blocksNaturalRecovery) newStatus.blocksNaturalRecovery = preset.blocksNaturalRecovery
+        if (preset.suppressesInjuryEffects) newStatus.suppressesInjuryEffects = true
+        if (preset.criticalInjuryRollModifier !== undefined) {
+          newStatus.criticalInjuryRollModifier = preset.criticalInjuryRollModifier
+        }
+        if (preset.removedOnEncounterEnd) newStatus.removedOnEncounterEnd = true
+        if (preset.blocksSkillIds) newStatus.blocksSkillIds = preset.blocksSkillIds
+        if (preset.onRemoveEffect) newStatus.onRemoveEffect = preset.onRemoveEffect
+        if (preset.stackable) newStatus.stacks = 1
+        if (preset.isCondition) newStatus.isCondition = true
+        updates.status = [...character!.status, newStatus]
+      }
+    }
+
+    update(updates)
+    setTalentStrainSpendInput(0)
+  }
+
   const spentXP = totalSpentXP(
     character.characteristics,
     character.skills,
@@ -532,7 +995,7 @@ export default function CharacterSheet() {
     character.career.chosenSkills,
     character.talents
   )
-  const availableXP = character.totalXP - spentXP
+  const availableXP = character.totalXP - spentXP - (character.permanentXPLoss ?? 0)
 
   const xpInvalid = character.totalXP < spentXP
   const woundsRecoveryBlocked = character.status.some((s) => s.blocksNaturalRecovery?.includes('wounds'))
@@ -716,18 +1179,40 @@ export default function CharacterSheet() {
     setViewingInventoryIndex(null)
   }
 
-  function applyStatusPreset(presetName: string) {
-    const preset = STATUS_QUICK_FILL[presetName]
+  function applyStatusPreset(presetId: string) {
+    const preset = statusPresetDocs!.find((p) => p.id === presetId)
     if (!preset) {
       setStatusForm(blankStatusForm())
       return
     }
-    setStatusForm({ ...blankStatusForm(), ...preset })
+    // Pre-fills the form from the real preset — every field stays
+    // editable afterward, same as before, since a preset's numbers are
+    // often meant to be adjusted (Burn's damage/duration vary per
+    // weapon, Characteristic Shift's stat/amount get overridden, etc.).
+    setStatusForm({
+      ...blankStatusForm(),
+      label: preset.label,
+      description: preset.description ?? '',
+      statModifiers: preset.statModifiers ?? [],
+      poolModifiers: preset.poolModifiers ?? [],
+      resultModifiers: preset.resultModifiers ?? [],
+      perTurnEffect: preset.perTurnEffect ?? {},
+      tickTiming: preset.tickTiming,
+      remainingRounds: preset.remainingRounds,
+      blocksNaturalRecovery: preset.blocksNaturalRecovery ?? [],
+      suppressesInjuryEffects: preset.suppressesInjuryEffects,
+      criticalInjuryRollModifier: preset.criticalInjuryRollModifier,
+      removedOnEncounterEnd: preset.removedOnEncounterEnd,
+      blocksSkillIds: preset.blocksSkillIds,
+      onRemoveEffect: preset.onRemoveEffect,
+      stacks: preset.stackable ? 1 : undefined,
+      isCondition: preset.isCondition ?? false,
+    })
   }
 
   // Only label is actually required — every other field on StatusEntry
-  // is optional, and stays optional here too. Empty statBonus/perTurnEffect/
-  // incomingDamageModifier objects and empty arrays are stripped before
+  // is optional, and stays optional here too. Empty poolModifiers/resultModifiers/
+  // statModifiers/perTurnEffect objects and empty arrays are stripped before
   // saving so they don't clutter the stored entry with meaningless {}.
   // Used to gate "Is a condition" — a pure condition by definition has no
   // other mechanical data attached. If any of these have real content,
@@ -736,12 +1221,11 @@ export default function CharacterSheet() {
   function statusFormHasMechanicalData(): boolean {
     const f = statusForm
     return (
-      (f.diceModifier?.length ?? 0) > 0 ||
-      Object.values(f.statBonus ?? {}).some((v) => v !== undefined) ||
-      Object.values(f.characteristicModifiers ?? {}).some((v) => v !== undefined) ||
+      (f.statModifiers?.length ?? 0) > 0 ||
+      (f.poolModifiers?.length ?? 0) > 0 ||
+      (f.resultModifiers?.length ?? 0) > 0 ||
       Object.values(f.perTurnEffect ?? {}).some((v) => v !== undefined) ||
       f.remainingRounds !== undefined ||
-      Object.values(f.incomingDamageModifier ?? {}).some((v) => v !== undefined) ||
       (f.blocksNaturalRecovery?.length ?? 0) > 0 ||
       f.stacks !== undefined
     )
@@ -751,26 +1235,25 @@ export default function CharacterSheet() {
     if (!statusForm.label.trim()) return
     const entry: StatusEntry = { id: crypto.randomUUID(), label: statusForm.label.trim() }
     if (statusForm.description?.trim()) entry.description = statusForm.description.trim()
-    if (statusForm.diceModifier && statusForm.diceModifier.length > 0) entry.diceModifier = statusForm.diceModifier
-    if (statusForm.statBonus && Object.values(statusForm.statBonus).some((v) => v !== undefined)) {
-      entry.statBonus = statusForm.statBonus
-    }
-    if (statusForm.characteristicModifiers && Object.values(statusForm.characteristicModifiers).some((v) => v !== undefined)) {
-      entry.characteristicModifiers = statusForm.characteristicModifiers
-    }
+    if (statusForm.statModifiers && statusForm.statModifiers.length > 0) entry.statModifiers = statusForm.statModifiers
+    if (statusForm.poolModifiers && statusForm.poolModifiers.length > 0) entry.poolModifiers = statusForm.poolModifiers
+    if (statusForm.resultModifiers && statusForm.resultModifiers.length > 0) entry.resultModifiers = statusForm.resultModifiers
     if (statusForm.perTurnEffect && Object.values(statusForm.perTurnEffect).some((v) => v !== undefined)) {
       entry.perTurnEffect = statusForm.perTurnEffect
     }
+    if (statusForm.tickTiming) entry.tickTiming = statusForm.tickTiming
     if (statusForm.remainingRounds !== undefined) entry.remainingRounds = statusForm.remainingRounds
-    if (statusForm.incomingDamageModifier && Object.values(statusForm.incomingDamageModifier).some((v) => v !== undefined)) {
-      entry.incomingDamageModifier = statusForm.incomingDamageModifier
-    }
     if (statusForm.blocksNaturalRecovery && statusForm.blocksNaturalRecovery.length > 0) {
       entry.blocksNaturalRecovery = statusForm.blocksNaturalRecovery
     }
     if (statusForm.stacks !== undefined) entry.stacks = statusForm.stacks
     if (statusForm.isCondition && !statusFormHasMechanicalData()) entry.isCondition = true
     if (statusForm.permanent) entry.permanent = true
+    if (statusForm.removedOnEncounterEnd) entry.removedOnEncounterEnd = true
+    if (statusForm.blocksSkillIds && statusForm.blocksSkillIds.length > 0) entry.blocksSkillIds = statusForm.blocksSkillIds
+    if (statusForm.onRemoveEffect) entry.onRemoveEffect = statusForm.onRemoveEffect
+    if (statusForm.criticalInjuryRollModifier !== undefined) entry.criticalInjuryRollModifier = statusForm.criticalInjuryRollModifier
+    if (statusForm.suppressesInjuryEffects) entry.suppressesInjuryEffects = true
 
     update({ status: [...character!.status, entry] })
     setStatusForm(blankStatusForm())
@@ -833,6 +1316,14 @@ export default function CharacterSheet() {
     const result: CritRollResult = { rawRoll, modifier, automaticModifier, finalRoll, doc }
     const entry: CriticalInjuryEntry = { id: crypto.randomUUID(), injuryId: doc.id, critContribution: 10 }
 
+    // Per-outcome fields (Horrific/Gruesome Injury) take priority over the
+    // injury-level ones when both exist, since they're specifically for an
+    // effect that depends on which outcome was rolled rather than being
+    // fixed regardless of it.
+    let statusIdToApply = doc.appliesStatusId
+    let statusOverrides: { statModifiers?: { stat: string; amount: number }[] } | undefined
+    let instantEffectToApply = doc.instantEffect
+
     // rollResults existing (needs a sub-roll) and isAltering (is this
     // permanent) are independent — Horrific Injury needs a sub-roll to
     // find which characteristic is affected but ISN'T permanent (goes
@@ -846,14 +1337,121 @@ export default function CharacterSheet() {
       result.alterationDescription = outcome?.result
       if (outcome) entry.alterationDescription = outcome.result
       entry.randomResult = String(subRoll)
+
+      if (outcome?.statusPresetId) {
+        statusIdToApply = outcome.statusPresetId
+        statusOverrides = outcome.overrides
+      }
+      if (outcome?.instantEffect) {
+        instantEffectToApply = outcome.instantEffect as typeof doc.instantEffect
+      }
     }
 
-    update({ criticalInjuries: [...character!.criticalInjuries, entry] })
+    const updates: Partial<Character> = { criticalInjuries: [...character!.criticalInjuries, entry] }
+
+    // instantEffect — fires once, the instant this injury is rolled. A
+    // characteristic target is a permanent direct write into
+    // characteristics itself (Gruesome Injury) rather than a temporary
+    // Status overlay, matching isAltering's own permanence; wounds/strain
+    // clamp the same way applyVitalChange already does elsewhere.
+    if (instantEffectToApply) {
+      const { stat, amount } = instantEffectToApply
+      if (stat === 'wounds') {
+        updates.currentWounds = Math.min(stats.woundThreshold * 2, Math.max(0, character!.currentWounds + amount))
+      } else if (stat === 'strain') {
+        updates.currentStrain = Math.min(stats.strainThreshold, Math.max(0, character!.currentStrain + amount))
+      } else {
+        const key = stat as keyof Characteristics
+        const oldValue = character!.characteristics[key]
+        const newValue = Math.max(1, oldValue + amount)
+        updates.characteristics = { ...character!.characteristics, [key]: newValue }
+        // Only reached by Gruesome Injury (the sole instantEffect that
+        // targets a characteristic, and always permanent) — without
+        // this, totalSpentXP would look smaller the instant the value
+        // drops, silently freeing XP to buy the exact same rank back
+        // with nothing actually lost. Cost of the specific step being
+        // erased, added to a running forfeited total rather than
+        // subtracted live — the rank can still be bought back later,
+        // but with fresh XP, not the XP that already paid for it once.
+        if (amount < 0) {
+          const lostStepCost =
+            characteristicCost(oldValue, BBB_STARTING_CHARACTERISTIC) - characteristicCost(newValue, BBB_STARTING_CHARACTERISTIC)
+          updates.permanentXPLoss = (character!.permanentXPLoss ?? 0) + lostStepCost
+        }
+      }
+    }
+
+    // forcesUnequip — immediately drop whatever's in Main Hand and Off
+    // Hand. Same all-slots-this-entry-occupies clearing unequipItem does,
+    // inlined here since this needs to fold into the same combined update
+    // as everything else this injury triggers, not a separate write.
+    if (doc.forcesUnequip) {
+      const newSlots = { ...character!.equippedSlots }
+      for (const handSlot of ['Main Hand', 'Off Hand'] as const) {
+        const occupantId = newSlots[handSlot]
+        if (!occupantId) continue
+        for (const slot of Object.keys(newSlots)) {
+          if (newSlots[slot as keyof EquippedSlots] === occupantId) newSlots[slot as keyof EquippedSlots] = null
+        }
+      }
+      updates.equippedSlots = newSlots
+    }
+
+    // appliesStatusId — creates a real Status from the referenced preset
+    // instead of relying on a person to remember to add it by hand.
+    // sourceInjuryId ties it to this specific occurrence (not just this
+    // injury type), so healing this exact injury later removes precisely
+    // this status, not any other status of the same label the character
+    // might separately have.
+    if (statusIdToApply) {
+      const preset = statusPresetDocs!.find((p) => p.id === statusIdToApply)
+      if (preset) {
+        // Firestore's updateDoc rejects the entire write if ANY field
+        // anywhere in the payload is literally undefined — not just this
+        // object's own top-level keys, but anything nested inside the
+        // array it's about to go into. Only assigning a key when the
+        // preset actually has a value (same pattern addStatus() already
+        // uses correctly) avoids silently poisoning the whole update.
+        const newStatus: StatusEntry = { id: crypto.randomUUID(), label: preset.label, sourceInjuryId: entry.id }
+        const statModifiersToUse = statusOverrides?.statModifiers ?? preset.statModifiers
+        if (statModifiersToUse) newStatus.statModifiers = statModifiersToUse
+        if (preset.poolModifiers) newStatus.poolModifiers = preset.poolModifiers
+        if (preset.resultModifiers) newStatus.resultModifiers = preset.resultModifiers
+        if (preset.perTurnEffect) newStatus.perTurnEffect = preset.perTurnEffect
+        if (preset.tickTiming) newStatus.tickTiming = preset.tickTiming
+        if (preset.remainingRounds !== undefined) newStatus.remainingRounds = preset.remainingRounds
+        if (preset.blocksNaturalRecovery) newStatus.blocksNaturalRecovery = preset.blocksNaturalRecovery
+        if (preset.suppressesInjuryEffects) newStatus.suppressesInjuryEffects = true
+        if (preset.criticalInjuryRollModifier !== undefined) newStatus.criticalInjuryRollModifier = preset.criticalInjuryRollModifier
+        if (preset.removedOnEncounterEnd) newStatus.removedOnEncounterEnd = true
+        if (preset.blocksSkillIds) newStatus.blocksSkillIds = preset.blocksSkillIds
+        if (preset.onRemoveEffect) newStatus.onRemoveEffect = preset.onRemoveEffect
+        if (preset.stackable) newStatus.stacks = 1
+        if (preset.isCondition) newStatus.isCondition = true
+        updates.status = [...character!.status, newStatus]
+      }
+    }
+
+    // forcesLastSlot and pendingPoolModifier both wait on systems that
+    // don't exist yet (the initiative tracker's round-stepping, and the
+    // dice roller's pool-building respectively) — deliberately not
+    // touched here. The data's already on the injury doc, ready for when
+    // those exist; there's nothing for this function to do with it yet.
+
+    update(updates)
     setCritRollResult(result)
   }
 
+  // Healing an injury cascade-removes any Status it created via
+  // appliesStatusId — matched by sourceInjuryId (this specific occurrence's
+  // own id), not by injuryId, so healing one of two simultaneous
+  // occurrences of the same injury type only clears that one's status.
   function removeCriticalInjury(index: number) {
-    update({ criticalInjuries: character!.criticalInjuries.filter((_, i) => i !== index) })
+    const removedEntry = character!.criticalInjuries[index]
+    update({
+      criticalInjuries: character!.criticalInjuries.filter((_, i) => i !== index),
+      status: character!.status.filter((s) => s.sourceInjuryId !== removedEntry.id),
+    })
     setViewingCritIndex(null)
   }
 
@@ -1120,7 +1718,15 @@ export default function CharacterSheet() {
 
           return (
             <div className="mt-3 rounded-lg border border-accent bg-surface p-4">
-              <ItemDetail doc={doc} entry={entry} qualityDocs={qualityDocs} skillDocs={skillDocs} />
+              <ItemDetail
+                doc={doc}
+                entry={entry}
+                qualityDocs={qualityDocs}
+                skillDocs={skillDocs}
+                talentDocs={talentDocs}
+                characterTalents={character.talents}
+                brawn={effectiveCharacteristics.brawn}
+              />
 
               {canEdit && !entry.destroyed && (
                 <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -1133,6 +1739,70 @@ export default function CharacterSheet() {
                       {equipped ? 'Unequip' : 'Equip'}
                     </button>
                   )}
+                  {equipped && doc.type === 'Weapon' && doc.skill && onRoll && (
+                    <button
+                      onClick={() => {
+                        const result = poolForSkill(doc.skill!, entry.id)
+                        if (!result) return
+                        // Improvised — attacking with this weapon unequips
+                        // it, since it's now out of hand until retrieved.
+                        // Fragile — attacking with it (same as any other
+                        // use) breaks it for good, same as clicking Use
+                        // directly. Both bundled into onResolved alongside
+                        // pending-injury consumption, same reasoning as
+                        // that fix: only fires once the roll actually
+                        // happens, not the instant the button is clicked.
+                        // Combined into one update rather than two
+                        // sequential ones (unequip, then destroy) to avoid
+                        // the second call reading a character reference
+                        // that hasn't caught up with the first yet.
+                        const hasAutoUnequip = (doc.qualities ?? []).some(
+                          (q) => qualityDocs.find((qd) => qd.name === q.name)?.autoUnequipOnAttack
+                        )
+                        const hasDestroysOnUse = (doc.qualities ?? []).some(
+                          (q) => qualityDocs.find((qd) => qd.name === q.name)?.destroysOnUse
+                        )
+                        onRoll(
+                          result.basePool,
+                          `${doc.name} Attack`,
+                          character.characterName,
+                          result.appliedModifiers,
+                          result.appliedResultModifiers,
+                          result.manualToggleOptions,
+                          (_dice, _rollResult, strainSpent) => {
+                            consumePendingInjuryEffects(result.pendingInjuryIds)
+                            const updates: Partial<Character> = {}
+                            if (hasAutoUnequip || hasDestroysOnUse) {
+                              const newSlots = { ...character!.equippedSlots }
+                              for (const slot of Object.keys(newSlots)) {
+                                if (newSlots[slot as keyof typeof newSlots] === entry.id) {
+                                  newSlots[slot as keyof typeof newSlots] = null
+                                }
+                              }
+                              updates.equippedSlots = newSlots
+                            }
+                            if (hasDestroysOnUse) {
+                              updates.inventory = character!.inventory.map((e) =>
+                                e.id === entry.id ? { ...e, destroyed: true } : e
+                              )
+                            }
+                            // Rapid Reaction/Proper Upbringing-style variable
+                            // toggles (choose an amount, pay strain equal to
+                            // it) — deducted only now that the roll actually
+                            // resolved, same deferred-consequence pattern as
+                            // everything else here.
+                            if (strainSpent > 0) {
+                              updates.currentStrain = Math.min(stats.strainThreshold, character!.currentStrain + strainSpent)
+                            }
+                            if (Object.keys(updates).length > 0) update(updates)
+                          }
+                        )
+                      }}
+                      className="rounded border border-border-strong px-3 py-1.5 text-xs text-fg hover:bg-surface-hover"
+                    >
+                      Roll Attack
+                    </button>
+                  )}
                   {entry.currentUses !== undefined && entry.currentUses > 0 && (
                     <button
                       onClick={() => useItem(viewingInventoryIndex)}
@@ -1142,7 +1812,8 @@ export default function CharacterSheet() {
                     </button>
                   )}
                   {doc.qualities?.some((q) => qualityDocs.find((qd) => qd.name === q.name)?.destroysOnUse) &&
-                    entry.currentUses === undefined && (
+                    entry.currentUses === undefined &&
+                    doc.type !== 'Weapon' && (
                       <button
                         onClick={() => useItem(viewingInventoryIndex)}
                         className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg hover:bg-accent-hover"
@@ -1305,7 +1976,14 @@ export default function CharacterSheet() {
 
                     {viewingDoc && (
                       <div className="mt-3 rounded border border-accent bg-page p-3">
-                        <ItemDetail doc={viewingDoc} qualityDocs={qualityDocs} skillDocs={skillDocs} />
+                        <ItemDetail
+                          doc={viewingDoc}
+                          qualityDocs={qualityDocs}
+                          skillDocs={skillDocs}
+                          talentDocs={talentDocs}
+                          characterTalents={character.talents}
+                          brawn={effectiveCharacteristics.brawn}
+                        />
                         <button
                           onClick={() => addItem(viewingDoc.id)}
                           className="mt-3 rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg hover:bg-accent-hover"
@@ -1443,7 +2121,36 @@ export default function CharacterSheet() {
                           </span>
                           {isCareer && <span className="ml-1 text-xs text-accent">★</span>}
                         </p>
-                        <DicePool ability={pool.ability} proficiency={pool.proficiency} />
+                        <div className="flex items-center">
+                          <DicePool ability={pool.ability} proficiency={pool.proficiency} />
+                          {onRoll && (
+                            <button
+                              onClick={() => {
+                                const result = poolForSkill(skillId)
+                                if (!result) return
+                                onRoll(
+                                  result.basePool,
+                                  doc.name,
+                                  character.characterName,
+                                  result.appliedModifiers,
+                                  result.appliedResultModifiers,
+                                  result.manualToggleOptions,
+                                  (_dice, _rollResult, strainSpent) => {
+                                    consumePendingInjuryEffects(result.pendingInjuryIds)
+                                    if (strainSpent > 0) {
+                                      update({
+                                        currentStrain: Math.min(stats.strainThreshold, character!.currentStrain + strainSpent),
+                                      })
+                                    }
+                                  }
+                                )
+                              }}
+                              className="ml-1.5 rounded border border-border-strong px-1.5 py-0.5 text-[10px] text-fg-secondary hover:bg-surface-hover"
+                            >
+                              Roll
+                            </button>
+                          )}
+                        </div>
                       </div>
                       {canEdit && editMode ? (
                         <div className="flex shrink-0 items-center gap-1.5">
@@ -1562,6 +2269,65 @@ export default function CharacterSheet() {
                   Characteristics: {allCharacteristicChoices.join(', ')}
                 </p>
               )}
+              {(doc.manualHeal || doc.manualStrainSpend || doc.strainCost || doc.appliesStatusId) &&
+                (() => {
+                  const maxUses = doc.usesPerPeriod ?? 1
+                  const usesLeft = t.usesRemaining ?? maxUses
+                  const isLimited = doc.limit !== 'None'
+                  const encounterBlocked = Boolean(doc.requiresActiveEncounter) && !encounterActive
+                  const disabled = (isLimited && usesLeft <= 0) || encounterBlocked
+                  const cap = doc.scalesWithRank ? t.rank : Math.max(1, t.rank)
+                  return (
+                    <div className="mt-3 border-t border-border pt-3">
+                      {isLimited && (
+                        <p className="mb-2 text-xs text-fg-muted">
+                          Uses left: {usesLeft} / {maxUses} ({doc.limit})
+                        </p>
+                      )}
+                      {encounterBlocked && <p className="mb-2 text-xs text-warning">Requires an active encounter.</p>}
+                      {doc.usesStoryPoint && (
+                        <p className="mb-2 text-xs text-fg-muted">
+                          Also transfers a Story Point — no Story Point pool exists yet, so this isn't tracked
+                          automatically.
+                        </p>
+                      )}
+                      {doc.manualStrainSpend ? (
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            min={0}
+                            max={cap}
+                            value={talentStrainSpendInput}
+                            onChange={(e) =>
+                              setTalentStrainSpendInput(Math.max(0, Math.min(cap, Number(e.target.value) || 0)))
+                            }
+                            className="w-16 rounded border border-border-strong bg-page px-2 py-1 text-sm text-fg"
+                          />
+                          <span className="text-xs text-fg-muted">strain (max {cap})</span>
+                          <button
+                            onClick={() => useTalentEntry(t, doc, talentStrainSpendInput)}
+                            disabled={disabled}
+                            className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg hover:bg-accent-hover disabled:bg-disabled disabled:text-disabled-fg"
+                          >
+                            Spend
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => useTalentEntry(t, doc)}
+                          disabled={disabled}
+                          className="rounded bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg hover:bg-accent-hover disabled:bg-disabled disabled:text-disabled-fg"
+                        >
+                          {doc.manualHeal
+                            ? `Use (heal ${doc.scalesWithRank ? doc.manualHeal.amount * t.rank : doc.manualHeal.amount} ${doc.manualHeal.stat})`
+                            : doc.strainCost
+                              ? `Use (${doc.strainCost} strain)`
+                              : 'Use'}
+                        </button>
+                      )}
+                    </div>
+                  )
+                })()}
             </div>
           )
         })()}
@@ -1662,34 +2428,53 @@ export default function CharacterSheet() {
               <p className="font-semibold text-fg">{s.label}</p>
               {s.description && <p className="mt-1 text-sm text-fg-secondary">{s.description}</p>}
               <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 text-sm">
-                {s.diceModifier && s.diceModifier.length > 0 && (
-                  <>
-                    <dt className="text-fg-muted">Dice:</dt>
-                    <dd className="text-fg">
-                      {s.diceModifier.map((d, i) => (
-                        <span key={i}>{i > 0 && ', '}{DICE_MODIFIER_LABELS[d.mode] ?? d.mode} {d.amount} ({d.appliesTo})</span>
-                      ))}
-                    </dd>
-                  </>
-                )}
-                {s.statBonus && Object.entries(s.statBonus).some(([, v]) => v !== undefined) && (
+                {s.statModifiers && s.statModifiers.length > 0 && (
                   <>
                     <dt className="text-fg-muted">Stats:</dt>
                     <dd className="text-fg">
-                      {(Object.entries(s.statBonus) as [string, number | undefined][])
-                        .filter(([, v]) => v !== undefined)
-                        .map(([k, v]) => `${STAT_LABELS[k] ?? k} ${v! > 0 ? '+' : ''}${v}`)
+                      {s.statModifiers
+                        .map((m) => `${STAT_LABELS[m.stat ?? ''] ?? CHARACTERISTIC_LABELS[m.stat ?? ''] ?? m.stat ?? '?'} ${m.amount > 0 ? '+' : ''}${m.amount}`)
                         .join(', ')}
                     </dd>
                   </>
                 )}
-                {s.perTurnEffect && (s.perTurnEffect.wounds !== undefined || s.perTurnEffect.strain !== undefined) && (
+                {s.poolModifiers && s.poolModifiers.length > 0 && (
                   <>
-                    <dt className="text-fg-muted">Per turn:</dt>
+                    <dt className="text-fg-muted">Pool:</dt>
                     <dd className="text-fg">
-                      {s.perTurnEffect.wounds !== undefined && `${s.perTurnEffect.wounds} wounds`}
-                      {s.perTurnEffect.wounds !== undefined && s.perTurnEffect.strain !== undefined && ', '}
-                      {s.perTurnEffect.strain !== undefined && `${s.perTurnEffect.strain} strain`}
+                      {s.poolModifiers.map((m, i) => (
+                        <span key={i}>
+                          {i > 0 && ', '}
+                          {POOL_MODIFIER_LABELS[m.type] ?? m.type} {m.amount}
+                          {m.appliesTo && ` (${m.appliesTo})`}
+                        </span>
+                      ))}
+                    </dd>
+                  </>
+                )}
+                {s.resultModifiers && s.resultModifiers.length > 0 && (
+                  <>
+                    <dt className="text-fg-muted">Result:</dt>
+                    <dd className="text-fg">
+                      {s.resultModifiers.map((m, i) => (
+                        <span key={i}>
+                          {i > 0 && ', '}
+                          {RESULT_MODIFIER_LABELS[m.type] ?? m.type} {m.amount}
+                          {m.appliesTo && ` (${m.appliesTo})`}
+                        </span>
+                      ))}
+                    </dd>
+                  </>
+                )}
+                {s.perTurnEffect && (s.perTurnEffect.wounds !== undefined || s.perTurnEffect.strain !== undefined || s.perTurnEffect.sanity !== undefined) && (
+                  <>
+                    <dt className="text-fg-muted">Per turn ({s.tickTiming ?? 'start'}):</dt>
+                    <dd className="text-fg">
+                      {[
+                        s.perTurnEffect.wounds !== undefined && `${s.perTurnEffect.wounds} wounds`,
+                        s.perTurnEffect.strain !== undefined && `${s.perTurnEffect.strain} strain`,
+                        s.perTurnEffect.sanity !== undefined && `${s.perTurnEffect.sanity} sanity`,
+                      ].filter(Boolean).join(', ')}
                     </dd>
                   </>
                 )}
@@ -1699,14 +2484,10 @@ export default function CharacterSheet() {
                     <dd className="text-fg">{s.remainingRounds}</dd>
                   </>
                 )}
-                {s.incomingDamageModifier && (s.incomingDamageModifier.wounds !== undefined || s.incomingDamageModifier.strain !== undefined) && (
+                {s.removedOnEncounterEnd && (
                   <>
-                    <dt className="text-fg-muted">Incoming dmg:</dt>
-                    <dd className="text-fg">
-                      {s.incomingDamageModifier.wounds !== undefined && `${s.incomingDamageModifier.wounds > 0 ? '+' : ''}${s.incomingDamageModifier.wounds} wounds`}
-                      {s.incomingDamageModifier.wounds !== undefined && s.incomingDamageModifier.strain !== undefined && ', '}
-                      {s.incomingDamageModifier.strain !== undefined && `${s.incomingDamageModifier.strain > 0 ? '+' : ''}${s.incomingDamageModifier.strain} strain`}
-                    </dd>
+                    <dt className="text-fg-muted">Duration:</dt>
+                    <dd className="text-fg">Until encounter ends</dd>
                   </>
                 )}
                 {s.blocksNaturalRecovery && s.blocksNaturalRecovery.length > 0 && (
@@ -1715,15 +2496,30 @@ export default function CharacterSheet() {
                     <dd className="text-fg">{s.blocksNaturalRecovery.map((k) => (k === 'wounds' ? 'Wounds' : 'Strain')).join(', ')}</dd>
                   </>
                 )}
-                {s.characteristicModifiers && Object.entries(s.characteristicModifiers).some(([, v]) => v !== undefined) && (
+                {s.blocksSkillIds && s.blocksSkillIds.length > 0 && (
                   <>
-                    <dt className="text-fg-muted">Characteristics:</dt>
+                    <dt className="text-fg-muted">Blocks skills:</dt>
                     <dd className="text-fg">
-                      {(Object.entries(s.characteristicModifiers) as [string, number | undefined][])
-                        .filter(([, v]) => v !== undefined)
-                        .map(([k, v]) => `${CHARACTERISTIC_LABELS[k] ?? k} ${v! > 0 ? '+' : ''}${v}`)
-                        .join(', ')}
+                      {s.blocksSkillIds.map((id) => skillDocs!.find((d) => d.id === id)?.name ?? id).join(', ')}
                     </dd>
+                  </>
+                )}
+                {s.onRemoveEffect && (
+                  <>
+                    <dt className="text-fg-muted">On removal:</dt>
+                    <dd className="text-fg">{s.onRemoveEffect.amount} {s.onRemoveEffect.stat}</dd>
+                  </>
+                )}
+                {s.criticalInjuryRollModifier !== undefined && (
+                  <>
+                    <dt className="text-fg-muted">Crit roll:</dt>
+                    <dd className="text-fg">{s.criticalInjuryRollModifier > 0 ? '+' : ''}{s.criticalInjuryRollModifier}</dd>
+                  </>
+                )}
+                {s.suppressesInjuryEffects && (
+                  <>
+                    <dt className="text-fg-muted">Suppresses:</dt>
+                    <dd className="text-fg">All active Critical Injury effects</dd>
                   </>
                 )}
                 {s.stacks !== undefined && (
@@ -1797,8 +2593,8 @@ export default function CharacterSheet() {
                   className="mt-0.5 w-full rounded border border-border-strong bg-page px-3 py-2 text-sm text-fg"
                 >
                   <option value="">Custom (fill in manually)</option>
-                  {Object.keys(STATUS_QUICK_FILL).map((name) => (
-                    <option key={name} value={name}>{name}</option>
+                  {statusPresetDocs!.map((preset) => (
+                    <option key={preset.id} value={preset.id} title={preset.description}>{preset.label}</option>
                   ))}
                 </select>
               </label>
@@ -1824,12 +2620,12 @@ export default function CharacterSheet() {
 
               <div className="mt-2 rounded border border-border-strong bg-page p-2">
                 <p className="mb-1 flex items-center justify-between text-xs font-semibold text-fg-secondary">
-                  Dice Modifiers
+                  Pool Modifiers
                   <button
                     onClick={() =>
                       setStatusForm((f) => ({
                         ...f,
-                        diceModifier: [...(f.diceModifier ?? []), { mode: 'addSetback', amount: 1, appliesTo: '' }],
+                        poolModifiers: [...(f.poolModifiers ?? []), { type: 'AddSetback', amount: 1, appliesTo: '' }],
                       }))
                     }
                     className="rounded border border-border-strong px-2 py-0.5 text-xs text-fg hover:bg-surface-hover"
@@ -1837,24 +2633,23 @@ export default function CharacterSheet() {
                     + Add
                   </button>
                 </p>
-                {(statusForm.diceModifier ?? []).map((d, i) => (
+                {(statusForm.poolModifiers ?? []).map((d, i) => (
                   <div key={i} className="mt-1 flex flex-wrap items-center gap-1">
                     <select
-                      value={d.mode}
+                      value={d.type}
                       onChange={(e) =>
                         setStatusForm((f) => ({
                           ...f,
-                          diceModifier: (f.diceModifier ?? []).map((x, j) =>
-                            j === i ? { ...x, mode: e.target.value as typeof d.mode } : x
+                          poolModifiers: (f.poolModifiers ?? []).map((x, j) =>
+                            j === i ? { ...x, type: e.target.value } : x
                           ),
                         }))
                       }
                       className="rounded border border-border-strong bg-surface px-2 py-1 text-xs text-fg"
                     >
-                      <option value="addBoost">Add Boost</option>
-                      <option value="addSetback">Add Setback</option>
-                      <option value="upgradeDifficulty">Upgrade Difficulty</option>
-                      <option value="downgradeDifficulty">Downgrade Difficulty</option>
+                      {Object.entries(POOL_MODIFIER_LABELS).map(([value, label]) => (
+                        <option key={value} value={value}>{label}</option>
+                      ))}
                     </select>
                     <input
                       type="number"
@@ -1862,7 +2657,7 @@ export default function CharacterSheet() {
                       onChange={(e) =>
                         setStatusForm((f) => ({
                           ...f,
-                          diceModifier: (f.diceModifier ?? []).map((x, j) =>
+                          poolModifiers: (f.poolModifiers ?? []).map((x, j) =>
                             j === i ? { ...x, amount: Number(e.target.value) || 0 } : x
                           ),
                         }))
@@ -1870,21 +2665,21 @@ export default function CharacterSheet() {
                       className="w-14 rounded border border-border-strong bg-surface px-2 py-1 text-xs text-fg"
                     />
                     <input
-                      value={d.appliesTo}
+                      value={d.appliesTo ?? ''}
                       onChange={(e) =>
                         setStatusForm((f) => ({
                           ...f,
-                          diceModifier: (f.diceModifier ?? []).map((x, j) =>
+                          poolModifiers: (f.poolModifiers ?? []).map((x, j) =>
                             j === i ? { ...x, appliesTo: e.target.value } : x
                           ),
                         }))
                       }
-                      placeholder="Applies to…"
+                      placeholder="Applies to… (blank = everything)"
                       className="flex-1 rounded border border-border-strong bg-surface px-2 py-1 text-xs text-fg"
                     />
                     <button
                       onClick={() =>
-                        setStatusForm((f) => ({ ...f, diceModifier: (f.diceModifier ?? []).filter((_, j) => j !== i) }))
+                        setStatusForm((f) => ({ ...f, poolModifiers: (f.poolModifiers ?? []).filter((_, j) => j !== i) }))
                       }
                       className="rounded border border-border-strong px-2 py-1 text-xs text-warning hover:bg-surface-hover"
                     >
@@ -1895,123 +2690,197 @@ export default function CharacterSheet() {
               </div>
 
               <div className="mt-2 rounded border border-border-strong bg-page p-2">
-                <p className="mb-1 text-xs font-semibold text-fg-secondary">Stat Bonus</p>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-                  {(['soak', 'meleeDefense', 'rangedDefense', 'woundThreshold', 'strainThreshold'] as const).map((stat) => (
-                    <label key={stat} className="text-xs text-fg-muted">
-                      {STAT_LABELS[stat]}
-                      <input
-                        type="number"
-                        value={statusForm.statBonus?.[stat] ?? ''}
-                        onChange={(e) =>
-                          setStatusForm((f) => ({
-                            ...f,
-                            statBonus: { ...f.statBonus, [stat]: e.target.value === '' ? undefined : Number(e.target.value) },
-                          }))
-                        }
-                        className="mt-0.5 w-full rounded border border-border-strong bg-surface px-2 py-1 text-xs text-fg"
-                      />
-                    </label>
-                  ))}
-                </div>
+                <p className="mb-1 flex items-center justify-between text-xs font-semibold text-fg-secondary">
+                  Result Modifiers
+                  <button
+                    onClick={() =>
+                      setStatusForm((f) => ({
+                        ...f,
+                        resultModifiers: [...(f.resultModifiers ?? []), { type: 'AddThreat', amount: 1, appliesTo: '' }],
+                      }))
+                    }
+                    className="rounded border border-border-strong px-2 py-0.5 text-xs text-fg hover:bg-surface-hover"
+                  >
+                    + Add
+                  </button>
+                </p>
+                {(statusForm.resultModifiers ?? []).map((d, i) => (
+                  <div key={i} className="mt-1 flex flex-wrap items-center gap-1">
+                    <select
+                      value={d.type}
+                      onChange={(e) =>
+                        setStatusForm((f) => ({
+                          ...f,
+                          resultModifiers: (f.resultModifiers ?? []).map((x, j) =>
+                            j === i ? { ...x, type: e.target.value } : x
+                          ),
+                        }))
+                      }
+                      className="rounded border border-border-strong bg-surface px-2 py-1 text-xs text-fg"
+                    >
+                      {Object.entries(RESULT_MODIFIER_LABELS).map(([value, label]) => (
+                        <option key={value} value={value}>{label}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="number"
+                      value={d.amount}
+                      onChange={(e) =>
+                        setStatusForm((f) => ({
+                          ...f,
+                          resultModifiers: (f.resultModifiers ?? []).map((x, j) =>
+                            j === i ? { ...x, amount: Number(e.target.value) || 0 } : x
+                          ),
+                        }))
+                      }
+                      className="w-14 rounded border border-border-strong bg-surface px-2 py-1 text-xs text-fg"
+                    />
+                    <input
+                      value={d.appliesTo ?? ''}
+                      onChange={(e) =>
+                        setStatusForm((f) => ({
+                          ...f,
+                          resultModifiers: (f.resultModifiers ?? []).map((x, j) =>
+                            j === i ? { ...x, appliesTo: e.target.value } : x
+                          ),
+                        }))
+                      }
+                      placeholder="Applies to… (blank = everything)"
+                      className="flex-1 rounded border border-border-strong bg-surface px-2 py-1 text-xs text-fg"
+                    />
+                    <button
+                      onClick={() =>
+                        setStatusForm((f) => ({ ...f, resultModifiers: (f.resultModifiers ?? []).filter((_, j) => j !== i) }))
+                      }
+                      className="rounded border border-border-strong px-2 py-1 text-xs text-warning hover:bg-surface-hover"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
               </div>
 
               <div className="mt-2 rounded border border-border-strong bg-page p-2">
-                <p className="mb-1 text-xs font-semibold text-fg-secondary">Characteristic Modifiers</p>
-                <p className="mb-1 text-xs text-fg-muted">
-                  Temporary — separate from XP-purchased increases. Can push a characteristic below its starting value.
+                <p className="mb-1 flex items-center justify-between text-xs font-semibold text-fg-secondary">
+                  Stat Modifiers
+                  <button
+                    onClick={() =>
+                      setStatusForm((f) => ({
+                        ...f,
+                        statModifiers: [...(f.statModifiers ?? []), { stat: 'soak', amount: 1 }],
+                      }))
+                    }
+                    className="rounded border border-border-strong px-2 py-0.5 text-xs text-fg hover:bg-surface-hover"
+                  >
+                    + Add
+                  </button>
                 </p>
-                <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
-                  {CHARACTERISTIC_ORDER.map(({ key, label }) => (
-                    <label key={key} className="text-xs text-fg-muted">
-                      {label}
-                      <input
-                        type="number"
-                        min={-5}
-                        max={5}
-                        value={statusForm.characteristicModifiers?.[key] ?? ''}
-                        onChange={(e) =>
-                          setStatusForm((f) => ({
-                            ...f,
-                            characteristicModifiers: {
-                              ...f.characteristicModifiers,
-                              [key]: e.target.value === '' ? undefined : Number(e.target.value),
-                            },
-                          }))
-                        }
-                        className="mt-0.5 w-full rounded border border-border-strong bg-surface px-2 py-1 text-xs text-fg"
-                      />
-                    </label>
-                  ))}
-                </div>
+                <p className="mb-1 text-xs text-fg-muted">
+                  Covers both the 5 derived stats and the 6 characteristics — a status can push a
+                  characteristic below its normal starting-value floor, unlike a permanent XP increase.
+                </p>
+                {(statusForm.statModifiers ?? []).map((m, i) => (
+                  <div key={i} className="mt-1 flex flex-wrap items-center gap-1">
+                    <select
+                      value={m.stat ?? ''}
+                      onChange={(e) =>
+                        setStatusForm((f) => ({
+                          ...f,
+                          statModifiers: (f.statModifiers ?? []).map((x, j) =>
+                            j === i ? { ...x, stat: e.target.value } : x
+                          ),
+                        }))
+                      }
+                      className="rounded border border-border-strong bg-surface px-2 py-1 text-xs text-fg"
+                    >
+                      {Object.entries(STAT_LABELS).map(([value, label]) => (
+                        <option key={value} value={value}>{label}</option>
+                      ))}
+                      {CHARACTERISTIC_ORDER.map(({ key, label }) => (
+                        <option key={key} value={key}>{label}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="number"
+                      value={m.amount}
+                      onChange={(e) =>
+                        setStatusForm((f) => ({
+                          ...f,
+                          statModifiers: (f.statModifiers ?? []).map((x, j) =>
+                            j === i ? { ...x, amount: Number(e.target.value) || 0 } : x
+                          ),
+                        }))
+                      }
+                      className="w-16 rounded border border-border-strong bg-surface px-2 py-1 text-xs text-fg"
+                    />
+                    <button
+                      onClick={() =>
+                        setStatusForm((f) => ({ ...f, statModifiers: (f.statModifiers ?? []).filter((_, j) => j !== i) }))
+                      }
+                      className="rounded border border-border-strong px-2 py-1 text-xs text-warning hover:bg-surface-hover"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
               </div>
 
-              <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                <div className="rounded border border-border-strong bg-page p-2">
-                  <p className="mb-1 text-xs font-semibold text-fg-secondary">Per-Turn Effect</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <label className="text-xs text-fg-muted">
-                      Wounds
-                      <input
-                        type="number"
-                        value={statusForm.perTurnEffect?.wounds ?? ''}
-                        onChange={(e) =>
-                          setStatusForm((f) => ({
-                            ...f,
-                            perTurnEffect: { ...f.perTurnEffect, wounds: e.target.value === '' ? undefined : Number(e.target.value) },
-                          }))
-                        }
-                        className="mt-0.5 w-full rounded border border-border-strong bg-surface px-2 py-1 text-xs text-fg"
-                      />
-                    </label>
-                    <label className="text-xs text-fg-muted">
-                      Strain
-                      <input
-                        type="number"
-                        value={statusForm.perTurnEffect?.strain ?? ''}
-                        onChange={(e) =>
-                          setStatusForm((f) => ({
-                            ...f,
-                            perTurnEffect: { ...f.perTurnEffect, strain: e.target.value === '' ? undefined : Number(e.target.value) },
-                          }))
-                        }
-                        className="mt-0.5 w-full rounded border border-border-strong bg-surface px-2 py-1 text-xs text-fg"
-                      />
-                    </label>
-                  </div>
-                </div>
-                <div className="rounded border border-border-strong bg-page p-2">
-                  <p className="mb-1 text-xs font-semibold text-fg-secondary">Incoming Damage Modifier</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <label className="text-xs text-fg-muted">
-                      Wounds
-                      <input
-                        type="number"
-                        value={statusForm.incomingDamageModifier?.wounds ?? ''}
-                        onChange={(e) =>
-                          setStatusForm((f) => ({
-                            ...f,
-                            incomingDamageModifier: { ...f.incomingDamageModifier, wounds: e.target.value === '' ? undefined : Number(e.target.value) },
-                          }))
-                        }
-                        className="mt-0.5 w-full rounded border border-border-strong bg-surface px-2 py-1 text-xs text-fg"
-                      />
-                    </label>
-                    <label className="text-xs text-fg-muted">
-                      Strain
-                      <input
-                        type="number"
-                        value={statusForm.incomingDamageModifier?.strain ?? ''}
-                        onChange={(e) =>
-                          setStatusForm((f) => ({
-                            ...f,
-                            incomingDamageModifier: { ...f.incomingDamageModifier, strain: e.target.value === '' ? undefined : Number(e.target.value) },
-                          }))
-                        }
-                        className="mt-0.5 w-full rounded border border-border-strong bg-surface px-2 py-1 text-xs text-fg"
-                      />
-                    </label>
-                  </div>
+              <div className="mt-2 rounded border border-border-strong bg-page p-2">
+                <p className="mb-1 text-xs font-semibold text-fg-secondary">Per-Turn Effect</p>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <label className="text-xs text-fg-muted">
+                    Wounds
+                    <input
+                      type="number"
+                      value={statusForm.perTurnEffect?.wounds ?? ''}
+                      onChange={(e) =>
+                        setStatusForm((f) => ({
+                          ...f,
+                          perTurnEffect: { ...f.perTurnEffect, wounds: e.target.value === '' ? undefined : Number(e.target.value) },
+                        }))
+                      }
+                      className="mt-0.5 w-full rounded border border-border-strong bg-surface px-2 py-1 text-xs text-fg"
+                    />
+                  </label>
+                  <label className="text-xs text-fg-muted">
+                    Strain
+                    <input
+                      type="number"
+                      value={statusForm.perTurnEffect?.strain ?? ''}
+                      onChange={(e) =>
+                        setStatusForm((f) => ({
+                          ...f,
+                          perTurnEffect: { ...f.perTurnEffect, strain: e.target.value === '' ? undefined : Number(e.target.value) },
+                        }))
+                      }
+                      className="mt-0.5 w-full rounded border border-border-strong bg-surface px-2 py-1 text-xs text-fg"
+                    />
+                  </label>
+                  <label className="text-xs text-fg-muted">
+                    Sanity
+                    <input
+                      type="number"
+                      value={statusForm.perTurnEffect?.sanity ?? ''}
+                      onChange={(e) =>
+                        setStatusForm((f) => ({
+                          ...f,
+                          perTurnEffect: { ...f.perTurnEffect, sanity: e.target.value === '' ? undefined : Number(e.target.value) },
+                        }))
+                      }
+                      className="mt-0.5 w-full rounded border border-border-strong bg-surface px-2 py-1 text-xs text-fg"
+                    />
+                  </label>
+                  <label className="text-xs text-fg-muted">
+                    Ticks at
+                    <select
+                      value={statusForm.tickTiming ?? 'start'}
+                      onChange={(e) => setStatusForm((f) => ({ ...f, tickTiming: e.target.value as 'start' | 'end' }))}
+                      className="mt-0.5 w-full rounded border border-border-strong bg-surface px-2 py-1 text-xs text-fg"
+                    >
+                      <option value="start">Start of turn</option>
+                      <option value="end">End of turn</option>
+                    </select>
+                  </label>
                 </div>
               </div>
 

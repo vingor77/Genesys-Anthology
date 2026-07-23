@@ -155,6 +155,7 @@ export function computeTalentBonuses(talents: TalentEntry[], talentDocs: TalentD
     const doc = talentDocs.find((d) => d.id === id)
     if (!doc?.statModifiers) continue
     for (const mod of doc.statModifiers) {
+      if (!mod.stat) continue // characteristic-scoped (Dedication) — handled by computeTalentCharacteristicBonuses below
       if (mod.stat in totals) {
         totals[mod.stat as keyof typeof totals] += mod.amount * rank
       }
@@ -163,17 +164,65 @@ export function computeTalentBonuses(talents: TalentEntry[], talentDocs: TalentD
   return totals
 }
 
-// Sums statBonus from every active status — was built into the schema
-// and the Add Status form, but never actually wired into the real stat
-// calculation, so it had zero effect until now. Same pattern as
-// computeTalentBonuses/computeEquippedStatBonuses above.
+// Companion to computeTalentBonuses above, same split-by-bucket reasoning
+// as computeInventoryCharacteristicBonuses has for Objects — this gap
+// existed even before this session's changes; Dedication (whose stat is
+// deliberately left unset on the document, substituted from
+// TalentEntry.characteristicChoices — see characters.ts's general
+// substitution rule) is what actually surfaced it.
+//
+// Deliberately does NOT collapse to "highest rank per talent id" the way
+// computeTalentBonuses above does — that collapse is only valid when
+// every purchase of the same ranked talent contributes identically
+// (Grit, Toughened). Dedication breaks that assumption: each purchase
+// is its own TalentEntry with its OWN characteristicChoices (rank 1
+// might pick Brawn, rank 2 Agility), so collapsing to a single max rank
+// and applying it to only the last-seen choice would incorrectly dump
+// the whole combined bonus onto one characteristic instead of +1 each
+// to several different ones. Iterating every entry individually handles
+// both cases correctly without needing to special-case which one this is.
+//
+// Callers need to sum this together with computeInventoryCharacteristicBonuses'
+// result before passing into computeEffectiveCharacteristics' inventoryBonuses
+// parameter — that wiring happens where CharacterSheet.tsx actually calls
+// these, not here.
+export function computeTalentCharacteristicBonuses(
+  talents: TalentEntry[],
+  talentDocs: TalentDoc[]
+): Partial<Characteristics> {
+  const totals: Partial<Characteristics> = {}
+  for (const t of talents) {
+    const doc = talentDocs.find((d) => d.id === t.id)
+    if (!doc?.statModifiers || !t.characteristicChoices) continue
+    for (const mod of doc.statModifiers) {
+      if (mod.stat) continue // has a fixed stat — handled by computeTalentBonuses above, not this function
+      for (const chosen of t.characteristicChoices) {
+        const key = chosen as keyof Characteristics
+        totals[key] = (totals[key] ?? 0) + mod.amount
+      }
+    }
+  }
+  return totals
+}
+
+// Sums the derived-stat entries out of every active status's unified
+// statModifiers array (soak/meleeDefense/rangedDefense/woundThreshold/
+// strainThreshold) — fixed to read the unified field after statBonus/
+// characteristicModifiers got merged into one array mid-session. Same
+// split-by-bucket convention computeInventoryStatBonuses already uses
+// for Objects: one array, two buckets (this function's derived-stat
+// bucket, computeEffectiveCharacteristics' characteristic bucket below),
+// distinguished by whether the stat name is a characteristic or not.
 export function computeStatusBonuses(status: StatusEntry[]): Required<DerivedStatBonuses> {
   const totals = { soak: 0, meleeDefense: 0, rangedDefense: 0, woundThreshold: 0, strainThreshold: 0 }
   for (const s of status) {
-    if (!s.statBonus) continue
-    for (const [stat, amount] of Object.entries(s.statBonus) as [string, number | undefined][]) {
-      if (amount !== undefined && stat in totals) {
-        totals[stat as keyof typeof totals] += amount
+    if (!s.statModifiers) continue
+    for (const mod of s.statModifiers) {
+      if (!mod.stat) continue // substituted-but-unresolved entries (shouldn't reach here) — skip rather than crash
+      if ((CHARACTERISTIC_KEYS as readonly string[]).includes(mod.stat)) continue // characteristic bucket, handled below
+      const key = ITEM_STAT_ALIASES[mod.stat] ?? mod.stat
+      if (key in totals) {
+        totals[key as keyof typeof totals] += mod.amount
       }
     }
   }
@@ -198,11 +247,12 @@ export function computeEffectiveCharacteristics(
 ): Characteristics {
   const effective = { ...base }
   for (const s of status) {
-    if (!s.characteristicModifiers) continue
-    for (const [key, amount] of Object.entries(s.characteristicModifiers) as [keyof Characteristics, number | undefined][]) {
-      if (amount !== undefined) {
-        effective[key] = Math.min(6, Math.max(1, effective[key] + amount))
-      }
+    if (!s.statModifiers) continue
+    for (const mod of s.statModifiers) {
+      if (!mod.stat) continue
+      if (!(CHARACTERISTIC_KEYS as readonly string[]).includes(mod.stat)) continue // derived-stat bucket, handled above
+      const key = mod.stat as keyof Characteristics
+      effective[key] = Math.min(6, Math.max(1, effective[key] + mod.amount))
     }
   }
   for (const [key, amount] of Object.entries(inventoryBonuses) as [keyof Characteristics, number | undefined][]) {

@@ -8,6 +8,7 @@ import { SKILLS } from './Skills'
 import { TALENTS } from './Talents'
 import { CRITICAL_INJURIES } from './CriticalInjuries'
 import { OBJECTS } from './Objects'
+import { STATUS_PRESETS } from './statusPresets'
 
 // TEMPORARY — delete this whole file (and the route pointing to it) once
 // all collections are seeded. Not linked from anywhere in the app nav;
@@ -85,6 +86,13 @@ export default function AdminSeedPage() {
           className="rounded bg-accent px-4 py-2 text-sm font-medium text-accent-fg hover:bg-accent-hover disabled:bg-disabled disabled:text-disabled-fg"
         >
           {status === 'working' ? 'Seeding…' : `Seed Objects (${OBJECTS.length})`}
+        </button>
+        <button
+          onClick={() => seedCollection('statusPresets', STATUS_PRESETS)}
+          disabled={status === 'working'}
+          className="rounded bg-accent px-4 py-2 text-sm font-medium text-accent-fg hover:bg-accent-hover disabled:bg-disabled disabled:text-disabled-fg"
+        >
+          {status === 'working' ? 'Seeding…' : `Seed Status Presets (${STATUS_PRESETS.length})`}
         </button>
       </div>
 

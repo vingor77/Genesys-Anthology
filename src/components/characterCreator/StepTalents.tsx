@@ -234,6 +234,16 @@ export default function StepTalents({ draft, updateDraft, setCanProceed, talentD
           else if (!affordableNext) blockedReason = 'Not enough XP'
         }
 
+        // Each rank stores only ITS OWN picks (rank 2 of Knack For It
+        // holds its 2 new skills, not rank 1's earlier pick) — showing
+        // just the highest rank's own array would silently drop every
+        // earlier rank's choice. Union across all owned ranks instead,
+        // same fix already applied on the character sheet's own version
+        // of this pane.
+        const ownedTalentEntries = ownedEntries(doc.id)
+        const allSkillChoices = ownedTalentEntries.flatMap((e) => e.skillChoices ?? [])
+        const allCharacteristicChoices = ownedTalentEntries.flatMap((e) => e.characteristicChoices ?? [])
+
         return (
           <div className="mt-4 rounded-lg border border-accent bg-surface p-4">
             <div className="mb-1 flex items-center justify-between">
@@ -251,6 +261,16 @@ export default function StepTalents({ draft, updateDraft, setCanProceed, talentD
             <div className="mt-2 rounded border-l-4 border-accent bg-accent/10 px-3 py-2">
               <p className="text-sm text-fg">{doc.rules}</p>
             </div>
+            {allSkillChoices.length > 0 && (
+              <p className="mt-2 text-xs text-fg-muted">
+                Skills: {allSkillChoices.map((id) => skillDocs.find((d) => d.id === id)?.name ?? id).join(', ')}
+              </p>
+            )}
+            {allCharacteristicChoices.length > 0 && (
+              <p className="mt-1 text-xs text-fg-muted capitalize">
+                Characteristics: {allCharacteristicChoices.join(', ')}
+              </p>
+            )}
 
             <div className="mt-3 flex flex-wrap items-center gap-2">
               {canBuyMore && (
